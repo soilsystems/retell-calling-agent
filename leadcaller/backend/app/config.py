@@ -1,0 +1,54 @@
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, PostgresDsn
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    SUPABASE_URL: str
+    SUPABASE_SERVICE_KEY: str
+    DATABASE_URL: PostgresDsn | str = Field(
+        default="postgresql+asyncpg://postgres:postgres@db:5432/leadcaller"
+    )
+
+    ZOHO_CLIENT_ID: str
+    ZOHO_CLIENT_SECRET: str
+    ZOHO_REDIRECT_URI: str
+    ZOHO_WEBHOOK_SECRET: str
+    ZOHO_REFRESH_TOKEN: str | None = None
+    ZOHO_API_DOMAIN: str = "https://www.zohoapis.com"
+    ZOHO_ACCOUNTS_DOMAIN: str = "https://accounts.zoho.com"
+
+    RETELL_API_KEY: str
+    RETELL_AGENT_ID: str
+    RETELL_FROM_NUMBER: str
+    RETELL_WEBHOOK_SECRET: str
+    RETELL_IMPORT_PHONE_NUMBER_ENDPOINT: str = "https://api.retellai.com/v2/import-phone-number"
+
+    EXOTEL_ACCOUNT_SID: str | None = None
+    EXOTEL_API_KEY: str | None = None
+    EXOTEL_API_TOKEN: str | None = None
+    EXOTEL_SUBDOMAIN: str | None = None
+    EXOTEL_TRUNK_SID: str | None = None
+    EXOTEL_PHONE_NUMBER: str | None = None
+    EXOTEL_TERMINATION_URI: str | None = None
+    EXOTEL_SIP_AUTH_USERNAME: str | None = None
+    EXOTEL_SIP_AUTH_PASSWORD: str | None = None
+    EXOTEL_TRANSPORT: Literal["TLS", "TCP", "UDP"] = "TLS"
+
+    BASE_URL: str
+    ENVIRONMENT: Literal["dev", "staging", "prod"] = "dev"
+    LOG_LEVEL: str = "INFO"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

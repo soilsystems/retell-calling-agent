@@ -51,7 +51,7 @@ async def connect_exotel_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
     api_key = _required_setting("EXOTEL_API_KEY", settings.EXOTEL_API_KEY)
     api_token = _required_setting("EXOTEL_API_TOKEN", settings.EXOTEL_API_TOKEN)
     subdomain = _required_setting("EXOTEL_SUBDOMAIN", settings.EXOTEL_SUBDOMAIN)
-    caller_id = _required_setting("EXOTEL_CALLER_ID", settings.EXOTEL_CALLER_ID)
+    caller_id = _required_setting("EXOTEL_CALLER_ID or EXOTEL_PHONE_NUMBER", settings.EXOTEL_CALLER_ID or settings.EXOTEL_PHONE_NUMBER)
     exoml_url = _required_setting("EXOTEL_EXOML_URL", settings.EXOTEL_EXOML_URL)
     status_callback = (
         settings.EXOTEL_STATUS_CALLBACK

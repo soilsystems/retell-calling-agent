@@ -63,6 +63,41 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
     assert db.rows[-1].success is True
 
 
+@pytest.mark.asyncio
+async def test_connect_exotel_call_uses_phone_number_as_caller_id_fallback(monkeypatch):
+    settings = SimpleNamespace(
+        EXOTEL_ACCOUNT_SID="account-sid",
+        EXOTEL_API_KEY="api-key",
+        EXOTEL_API_TOKEN="api-token",
+        EXOTEL_SUBDOMAIN="api.in.exotel.com",
+        EXOTEL_CALLER_ID=None,
+        EXOTEL_PHONE_NUMBER="+918046376848",
+        EXOTEL_EXOML_URL="http://my.exotel.com/account-sid/exoml/start_voice/app-id",
+        EXOTEL_STATUS_CALLBACK="https://example.com/webhooks/exotel/status",
+        EXOTEL_CALL_TYPE="trans",
+        BASE_URL="https://example.com",
+    )
+    monkeypatch.setattr("app.services.exotel_service.get_settings", lambda: settings)
+
+    lead = Lead(
+        id=uuid4(),
+        zoho_lead_id="zoho-1",
+        name="Ravi",
+        phone="+919876543210",
+        language_preference=LanguagePreference.english,
+    )
+    db = FakeDb()
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("https://api.in.exotel.com/v1/Accounts/account-sid/Calls/connect").mock(
+            return_value=Response(200, json={"Call": {"Sid": "call-sid"}})
+        )
+        await connect_exotel_call(lead, db)
+
+    body = route.calls.last.request.content.decode()
+    assert "CallerId=%2B918046376848" in body
+
+
 def test_required_setting_rejects_placeholder_values():
     with pytest.raises(HTTPException) as exc:
         _required_setting("EXOTEL_CALLER_ID", "0XXXXXX4890")

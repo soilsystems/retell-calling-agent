@@ -384,7 +384,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
               <div className="callOptionIcon"><PhoneCall size={28} /></div>
               <div>
                 <strong>Call via Exotel</strong>
-                <span>Retell agent calls using the configured Exotel telephony route</span>
+                <span>Exotel places the call using the configured ExoML app</span>
               </div>
             </button>
           </div>
@@ -397,7 +397,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
               {activeMode === "ai"
                 ? "Dispatching AI agent..."
                 : activeMode === "exotel"
-                  ? "Dispatching agent via Exotel..."
+                  ? "Requesting Exotel call..."
                   : "Connecting your microphone..."}
             </p>
           </div>
@@ -435,7 +435,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
               {activeMode === "ai"
                 ? "AI call queued successfully"
                 : activeMode === "exotel"
-                  ? "Agent call queued via Exotel"
+                  ? "Exotel call request sent"
                   : "Call ended"}
             </p>
             <button className="tableAction" style={{ marginTop: 8 }} onClick={onClose}>Close</button>

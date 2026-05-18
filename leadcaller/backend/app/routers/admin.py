@@ -296,7 +296,7 @@ async def call_lead(
     mode=ai        : Retell AI agent places the phone call automatically.
     mode=human     : Returns a Retell web-call access token so the operator
                      can speak to the lead directly from the browser.
-    mode=exotel    : Retell AI agent places the call through the configured number.
+    mode=exotel    : Exotel bridges the phone call through the configured ExoML app.
     mode=exotel_app: Exotel bridges the phone call through the configured ExoML app.
     """
     lead = await db.get(Lead, lead_id)
@@ -305,8 +305,11 @@ async def call_lead(
 
     settings = get_settings()
 
-    if body.mode in {"ai", "exotel"}:
+    if body.mode == "ai":
         return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
+
+    if body.mode == "exotel":
+        return await connect_exotel_call(lead, db)
 
     if body.mode == "exotel_app":
         return await connect_exotel_call(lead, db)

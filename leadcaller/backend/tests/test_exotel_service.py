@@ -3,10 +3,12 @@ from uuid import uuid4
 
 import pytest
 import respx
+from fastapi import HTTPException
 from httpx import Response
 
 from app.models import LanguagePreference, Lead
 from app.services.exotel_service import connect_exotel_call
+from app.services.exotel_service import _required_setting
 
 
 class FakeDb:
@@ -59,3 +61,11 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
     assert result["mode"] == "exotel"
     assert db.rows[-1].operation == "exotel_connect_call"
     assert db.rows[-1].success is True
+
+
+def test_required_setting_rejects_placeholder_values():
+    with pytest.raises(HTTPException) as exc:
+        _required_setting("EXOTEL_CALLER_ID", "0XXXXXX4890")
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "EXOTEL_CALLER_ID still has a placeholder value"

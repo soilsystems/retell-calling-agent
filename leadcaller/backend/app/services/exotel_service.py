@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 def _required_setting(name: str, value: str | None) -> str:
     if not value or value.strip() == "":
         raise HTTPException(status_code=500, detail=f"{name} is not configured")
-    return value.strip()
+    value = value.strip()
+    if "replace-with" in value or "<" in value or ">" in value or "XXXX" in value:
+        raise HTTPException(status_code=500, detail=f"{name} still has a placeholder value")
+    return value
 
 
 def _parse_exotel_response(response: httpx.Response) -> dict[str, Any]:

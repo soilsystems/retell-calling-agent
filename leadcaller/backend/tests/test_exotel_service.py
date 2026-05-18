@@ -1,0 +1,61 @@
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+import respx
+from httpx import Response
+
+from app.models import LanguagePreference, Lead
+from app.services.exotel_service import connect_exotel_call
+
+
+class FakeDb:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, row):
+        self.rows.append(row)
+
+    async def commit(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_connect_exotel_call_posts_expected_form(monkeypatch):
+    settings = SimpleNamespace(
+        EXOTEL_ACCOUNT_SID="account-sid",
+        EXOTEL_API_KEY="api-key",
+        EXOTEL_API_TOKEN="api-token",
+        EXOTEL_SUBDOMAIN="api.in.exotel.com",
+        EXOTEL_CALLER_ID="08000000000",
+        EXOTEL_EXOML_URL="http://my.exotel.com/account-sid/exoml/start_voice/app-id",
+        EXOTEL_STATUS_CALLBACK="https://example.com/webhooks/exotel/status",
+        EXOTEL_CALL_TYPE="trans",
+        BASE_URL="https://example.com",
+    )
+    monkeypatch.setattr("app.services.exotel_service.get_settings", lambda: settings)
+
+    lead = Lead(
+        id=uuid4(),
+        zoho_lead_id="zoho-1",
+        name="Ravi",
+        phone="+919876543210",
+        language_preference=LanguagePreference.english,
+    )
+    db = FakeDb()
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("https://api.in.exotel.com/v1/Accounts/account-sid/Calls/connect").mock(
+            return_value=Response(200, json={"Call": {"Sid": "call-sid"}})
+        )
+        result = await connect_exotel_call(lead, db)
+
+    request = route.calls.last.request
+    body = request.content.decode()
+    assert "From=%2B919876543210" in body
+    assert "CallerId=08000000000" in body
+    assert "CallType=trans" in body
+    assert result["status"] == "queued"
+    assert result["mode"] == "exotel"
+    assert db.rows[-1].operation == "exotel_connect_call"
+    assert db.rows[-1].success is True

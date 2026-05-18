@@ -20,6 +20,7 @@ from app.models import (
     Lead,
     WebhookEvent,
 )
+from app.services.exotel_service import connect_exotel_call
 from app.services.retell_service import trigger_retell_call
 from app.services.zoho_service import sync_recent_zoho_leads
 
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 class CallLeadRequest(BaseModel):
-    mode: Literal["ai", "human"]
+    mode: Literal["ai", "human", "exotel"]
 
 
 class ZohoSyncResponse(BaseModel):
@@ -269,9 +270,10 @@ async def call_lead(
 ) -> dict[str, Any]:
     """Initiate a call for a lead.
 
-    mode=ai  : Retell AI agent places the phone call automatically.
-    mode=human: Returns a Retell web-call access token so the operator
-                can speak to the lead directly from the browser.
+    mode=ai    : Retell AI agent places the phone call automatically.
+    mode=human : Returns a Retell web-call access token so the operator
+                 can speak to the lead directly from the browser.
+    mode=exotel: Exotel bridges the phone call through the configured ExoML app.
     """
     lead = await db.get(Lead, lead_id)
     if not lead:
@@ -303,6 +305,9 @@ async def call_lead(
             "lead_name": lead.name,
             "phone": lead.phone,
         }
+
+    if body.mode == "exotel":
+        return await connect_exotel_call(lead, db)
 
     # mode == "human": create a Retell web call and return the access token
     web_call_body = {

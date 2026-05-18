@@ -121,3 +121,18 @@ async def retell_call_completed(
             background_tasks.add_task(schedule_retry, attempt.call_job_id, attempt.status.value)
 
     return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@router.post("/exotel/status")
+async def exotel_status(request: Request) -> JSONResponse:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        payload = await request.json()
+    elif "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        form = await request.form()
+        payload = dict(form)
+    else:
+        payload = {"body": (await request.body()).decode("utf-8", errors="replace")}
+
+    logger.info("Exotel status callback received: %s", payload)
+    return JSONResponse(status_code=200, content={"status": "accepted"})

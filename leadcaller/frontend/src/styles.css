@@ -665,6 +665,15 @@ td small {
   border-color: #22c55e;
 }
 
+.exotelOption {
+  border-color: #fed7aa;
+  background: linear-gradient(135deg, #fff7ed, #ffedd5);
+}
+
+.exotelOption:hover {
+  border-color: #f97316;
+}
+
 .callOptionIcon {
   width: 52px;
   height: 52px;
@@ -681,6 +690,11 @@ td small {
 
 .humanOption .callOptionIcon {
   background: #22c55e;
+  color: #ffffff;
+}
+
+.exotelOption .callOptionIcon {
+  background: #f97316;
   color: #ffffff;
 }
 

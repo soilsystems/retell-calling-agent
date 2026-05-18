@@ -28,7 +28,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 class CallLeadRequest(BaseModel):
-    mode: Literal["ai", "human", "exotel"]
+    mode: Literal["ai", "human", "exotel", "exotel_app"]
 
 
 class ZohoSyncResponse(BaseModel):
@@ -47,6 +47,29 @@ def _iso(value: datetime | None) -> str | None:
 
 def _status_value(value: Any) -> str:
     return getattr(value, "value", str(value))
+
+
+async def _queue_retell_ai_call(lead: Lead, db: AsyncSession, background_tasks: BackgroundTasks, mode: str) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    call_job = CallJob(
+        lead_id=lead.id,
+        status=CallJobStatus.pending,
+        scheduled_at=datetime.now(timezone.utc),
+        retry_count=0,
+        max_retries=3,
+    )
+    db.add(call_job)
+    await db.commit()
+    await db.refresh(call_job)
+    background_tasks.add_task(trigger_retell_call, call_job.id)
+    return {
+        "mode": mode,
+        "status": "queued",
+        "call_job_id": str(call_job.id),
+        "lead_name": lead.name,
+        "phone": lead.phone,
+    }
 
 
 @router.get("/summary")
@@ -270,10 +293,11 @@ async def call_lead(
 ) -> dict[str, Any]:
     """Initiate a call for a lead.
 
-    mode=ai    : Retell AI agent places the phone call automatically.
-    mode=human : Returns a Retell web-call access token so the operator
-                 can speak to the lead directly from the browser.
-    mode=exotel: Exotel bridges the phone call through the configured ExoML app.
+    mode=ai        : Retell AI agent places the phone call automatically.
+    mode=human     : Returns a Retell web-call access token so the operator
+                     can speak to the lead directly from the browser.
+    mode=exotel    : Retell AI agent places the call through the configured number.
+    mode=exotel_app: Exotel bridges the phone call through the configured ExoML app.
     """
     lead = await db.get(Lead, lead_id)
     if not lead:
@@ -281,32 +305,10 @@ async def call_lead(
 
     settings = get_settings()
 
-    if body.mode == "ai":
-        # Reuse the existing AI phone-call flow by creating a pending CallJob
-        # and immediately dispatching it to Retell.
-        from datetime import datetime, timezone
-        from app.models import CallJobStatus
+    if body.mode in {"ai", "exotel"}:
+        return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
 
-        call_job = CallJob(
-            lead_id=lead.id,
-            status=CallJobStatus.pending,
-            scheduled_at=datetime.now(timezone.utc),
-            retry_count=0,
-            max_retries=3,
-        )
-        db.add(call_job)
-        await db.commit()
-        await db.refresh(call_job)
-        background_tasks.add_task(trigger_retell_call, call_job.id)
-        return {
-            "mode": "ai",
-            "status": "queued",
-            "call_job_id": str(call_job.id),
-            "lead_name": lead.name,
-            "phone": lead.phone,
-        }
-
-    if body.mode == "exotel":
+    if body.mode == "exotel_app":
         return await connect_exotel_call(lead, db)
 
     # mode == "human": create a Retell web call and return the access token

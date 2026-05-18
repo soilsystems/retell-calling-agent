@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     EXOTEL_SIP_AUTH_USERNAME: str | None = None
     EXOTEL_SIP_AUTH_PASSWORD: str | None = None
     EXOTEL_TRANSPORT: Literal["TLS", "TCP", "UDP"] = "TLS"
+    EXOTEL_CALLER_ID: str | None = None
+    EXOTEL_EXOML_URL: str | None = None
+    EXOTEL_STATUS_CALLBACK: str | None = None
+    EXOTEL_CALL_TYPE: Literal["trans", "promo"] = "trans"
 
     BASE_URL: str
     ENVIRONMENT: Literal["dev", "staging", "prod"] = "dev"

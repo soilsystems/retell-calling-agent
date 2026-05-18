@@ -13,6 +13,7 @@ import {
   Mic,
   MicOff,
   Phone,
+  PhoneCall,
   PhoneOff,
   RefreshCcw,
   Search,
@@ -255,7 +256,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
   const [callState, setCallState] = React.useState<CallState>("choosing");
   const [error, setError] = React.useState<string | null>(null);
   const [isMuted, setIsMuted] = React.useState(false);
-  const [activeMode, setActiveMode] = React.useState<"ai" | "human" | null>(null);
+  const [activeMode, setActiveMode] = React.useState<"ai" | "human" | "exotel" | null>(null);
 
   const cleanup = React.useCallback(() => {
     try { retellClient.stopCall(); } catch {}
@@ -304,6 +305,24 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
       await retellClient.startCall({ accessToken: data.access_token });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start call");
+      setCallState("choosing");
+    }
+  };
+
+  const initiateExotel = async () => {
+    setActiveMode("exotel");
+    setCallState("connecting");
+    setError(null);
+    try {
+      const res = await fetch(`/admin/leads/${lead.id}/call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "exotel" })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCallState("ended");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start Exotel call");
       setCallState("choosing");
     }
   };
@@ -361,13 +380,26 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
                 <span>Connect you directly to the lead via browser call</span>
               </div>
             </button>
+            <button className="callOption exotelOption" id="btn-exotel-call" onClick={() => void initiateExotel()}>
+              <div className="callOptionIcon"><PhoneCall size={28} /></div>
+              <div>
+                <strong>Call via Exotel</strong>
+                <span>Use your Exotel caller ID and ExoML app to bridge the call</span>
+              </div>
+            </button>
           </div>
         )}
 
         {callState === "connecting" && (
           <div className="callStatus">
             <div className="pulseRing" />
-            <p>{activeMode === "ai" ? "Dispatching AI agent…" : "Connecting your microphone…"}</p>
+            <p>
+              {activeMode === "ai"
+                ? "Dispatching AI agent..."
+                : activeMode === "exotel"
+                  ? "Requesting Exotel call..."
+                  : "Connecting your microphone..."}
+            </p>
           </div>
         )}
 
@@ -399,7 +431,13 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
         {callState === "ended" && (
           <div className="callStatus">
             <CheckCircle2 size={40} color="#047857" />
-            <p>{activeMode === "ai" ? "AI call queued successfully" : "Call ended"}</p>
+            <p>
+              {activeMode === "ai"
+                ? "AI call queued successfully"
+                : activeMode === "exotel"
+                  ? "Exotel call request sent"
+                  : "Call ended"}
+            </p>
             <button className="tableAction" style={{ marginTop: 8 }} onClick={onClose}>Close</button>
           </div>
         )}

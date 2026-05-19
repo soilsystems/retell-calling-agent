@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -m pytest tests/ -x -q)",
+      "Read(//c/Users/darshan/OneDrive/Documents/GitHub/retell-calling-agent/leadcaller/backend/.venv/Scripts/**)",
+      "Read(//c/Users/darshan/OneDrive/Documents/GitHub/retell-calling-agent/leadcaller/backend/.venv/**)",
+      "Bash(PYTHONPATH=/c/Users/darshan/OneDrive/Documents/GitHub/retell-calling-agent/leadcaller/backend /c/Users/darshan/OneDrive/Documents/GitHub/retell-calling-agent/leadcaller/backend/.venv/Scripts/python.exe -m pytest /c/Users/darshan/OneDrive/Documents/GitHub/retell-calling-agent/leadcaller/backend/tests/ -x -q)"
+    ]
+  }
+}

@@ -20,7 +20,6 @@ from app.models import (
     Lead,
     WebhookEvent,
 )
-from app.services.exotel_service import connect_exotel_call
 from app.services.retell_service import trigger_retell_call
 from app.services.zoho_service import sync_recent_zoho_leads
 
@@ -308,11 +307,8 @@ async def call_lead(
     if body.mode == "ai":
         return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
 
-    if body.mode == "exotel":
-        return await connect_exotel_call(lead, db)
-
-    if body.mode == "exotel_app":
-        return await connect_exotel_call(lead, db)
+    if body.mode in ("exotel", "exotel_app"):
+        return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
 
     # mode == "human": create a Retell web call and return the access token
     clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()

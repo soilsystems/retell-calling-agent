@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import Lead, WebhookEvent, WebhookSource
+from app.models import CrmSyncLog, Lead, WebhookEvent, WebhookSource
+from app.config import get_settings
 from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
@@ -149,33 +151,27 @@ async def retell_inbound(
         return JSONResponse(status_code=400, content={"detail": "invalid json"})
 
     logger.info("Retell inbound webhook received payload: %s", payload)
-    from_number = payload.get("from_number")
-    
-    if not from_number:
-        return JSONResponse(status_code=200, content={})
-
-    # Resilient phone matching: extract digits and match the last 10 digits
-    from_clean = "".join(c for c in from_number if c.isdigit())
-    suffix = from_clean[-10:] if len(from_clean) >= 10 else from_clean
-
-    stmt = select(Lead).where(
-        (Lead.phone == from_number) | 
-        (Lead.phone.like(f"%{suffix}"))
-    )
-    result = await db.execute(stmt)
-    lead = result.scalars().first()
+    call_inbound = payload.get("call_inbound") or {}
+    candidate_numbers = [
+        payload.get("from_number"),
+        payload.get("to_number"),
+        call_inbound.get("from_number"),
+        call_inbound.get("to_number"),
+    ]
+    lead = await _find_lead_for_retell_inbound(candidate_numbers, db)
 
     if not lead:
-        logger.info("No lead found matching from_number=%s", from_number)
-        return JSONResponse(status_code=200, content={})
+        logger.info("No lead found for Retell inbound candidate numbers=%s", candidate_numbers)
+        return JSONResponse(status_code=200, content={"call_inbound": {}})
 
     logger.info("Found matching lead for inbound call: name=%s", lead.name)
-    
-    # Clean up name to remove trailing "(Sample)" or "(sample)" or "Test"
     clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
 
     variables = {
         "lead_name": clean_name,
+        "customer_name": clean_name,
+        "name": clean_name,
+        "phone": lead.phone,
         "language": lead.language_preference.value,
         "city": lead.city or "",
         "campaign": lead.campaign or "",
@@ -185,8 +181,41 @@ async def retell_inbound(
     return JSONResponse(
         status_code=200,
         content={
-            "dynamic_variables": variables,
-            "retell_llm_dynamic_variables": variables
-        }
+            "call_inbound": {
+                "override_agent_id": get_settings().RETELL_AGENT_ID,
+                "dynamic_variables": variables,
+                "metadata": {
+                    "lead_id": str(lead.id),
+                    "zoho_lead_id": lead.zoho_lead_id,
+                    "source": "leadcaller_retell_inbound",
+                },
+            }
+        },
     )
+
+
+async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db: AsyncSession) -> Lead | None:
+    for raw_number in candidate_numbers:
+        if not raw_number:
+            continue
+        digits = "".join(c for c in raw_number if c.isdigit())
+        suffix = digits[-10:] if len(digits) >= 10 else digits
+        if not suffix:
+            continue
+        result = await db.execute(
+            select(Lead).where((Lead.phone == raw_number) | (Lead.phone.like(f"%{suffix}"))).limit(1)
+        )
+        lead = result.scalars().first()
+        if lead:
+            return lead
+
+    result = await db.execute(
+        select(CrmSyncLog)
+        .options(selectinload(CrmSyncLog.lead))
+        .where(CrmSyncLog.operation == "exotel_connect_call", CrmSyncLog.success.is_(True))
+        .order_by(desc(CrmSyncLog.synced_at))
+        .limit(1)
+    )
+    latest_exotel_log = result.scalar_one_or_none()
+    return latest_exotel_log.lead if latest_exotel_log else None
 

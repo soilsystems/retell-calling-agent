@@ -60,6 +60,9 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
     form = parse_qs(body)
     assert form["From"] == ["+919876543210"]
     assert form["CallerId"] == ["08000000000"]
+    assert form["Url"][0].startswith("http://my.exotel.com/account-sid/exoml/start_voice/app-id?")
+    assert "lead_name=Ravi" in form["Url"][0]
+    assert "lead_city=Bengaluru" in form["Url"][0]
     assert form["CallType"] == ["trans"]
     assert form["CustomField"] == ["Ravi"]
     assert form["lead_name"] == ["Ravi"]

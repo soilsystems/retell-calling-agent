@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -44,6 +45,21 @@ def _parse_exotel_response(response: httpx.Response) -> dict[str, Any]:
         return {"raw_response": text}
 
 
+def _lead_custom_field(lead: Lead) -> str:
+    return json.dumps(
+        {
+            "lead_name": lead.name,
+            "name": lead.name,
+            "phone": lead.phone,
+            "city": lead.city or "",
+            "language": lead.language_preference.value,
+            "campaign": lead.campaign or "",
+            "zoho_lead_id": lead.zoho_lead_id,
+        },
+        separators=(",", ":"),
+    )
+
+
 async def connect_exotel_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
     """Initiate an outbound Exotel call to the lead.
 
@@ -74,6 +90,7 @@ async def connect_exotel_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
         "Url": exoml_url,         # ExoML app — runs when lead picks up
         "CallType": settings.EXOTEL_CALL_TYPE,
         "StatusCallback": status_callback,
+        "CustomField": _lead_custom_field(lead),
     }
     url = f"https://{subdomain.rstrip('/')}/v1/Accounts/{account_sid}/Calls/connect"
 

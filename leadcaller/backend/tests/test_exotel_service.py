@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 from uuid import uuid4
 
 import pytest
@@ -42,6 +43,8 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
         zoho_lead_id="zoho-1",
         name="Ravi",
         phone="+919876543210",
+        city="Bengaluru",
+        campaign="May Campaign",
         language_preference=LanguagePreference.english,
     )
     db = FakeDb()
@@ -54,9 +57,13 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
 
     request = route.calls.last.request
     body = request.content.decode()
-    assert "From=%2B919876543210" in body
-    assert "CallerId=08000000000" in body
-    assert "CallType=trans" in body
+    form = parse_qs(body)
+    assert form["From"] == ["+919876543210"]
+    assert form["CallerId"] == ["08000000000"]
+    assert form["CallType"] == ["trans"]
+    assert '"lead_name":"Ravi"' in form["CustomField"][0]
+    assert '"city":"Bengaluru"' in form["CustomField"][0]
+    assert '"campaign":"May Campaign"' in form["CustomField"][0]
     assert result["status"] == "queued"
     assert result["mode"] == "exotel"
     assert db.rows[-1].operation == "exotel_connect_call"
@@ -84,6 +91,8 @@ async def test_connect_exotel_call_uses_phone_number_as_caller_id_fallback(monke
         zoho_lead_id="zoho-1",
         name="Ravi",
         phone="+919876543210",
+        city="Bengaluru",
+        campaign="May Campaign",
         language_preference=LanguagePreference.english,
     )
     db = FakeDb()

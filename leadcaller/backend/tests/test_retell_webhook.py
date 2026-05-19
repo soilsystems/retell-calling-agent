@@ -201,3 +201,4 @@ async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
     assert variables["lead_name"] == "Ravi Chandra"
     assert variables["customer_name"] == "Ravi Chandra"
     assert variables["phone"] == "+918746905010"
+    assert "Ravi Chandra" in body["call_inbound"]["agent_override"]["retell_llm"]["begin_message"]

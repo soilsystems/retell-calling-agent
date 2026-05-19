@@ -184,6 +184,20 @@ async def retell_inbound(
             "call_inbound": {
                 "override_agent_id": get_settings().RETELL_AGENT_ID,
                 "dynamic_variables": variables,
+                "agent_override": {
+                    "retell_llm": {
+                        "begin_message": (
+                            f"Hello, am I speaking with {clean_name}? "
+                            "This is Viraj calling from Soil Systems."
+                        )
+                    },
+                    "conversation_flow": {
+                        "begin_message": (
+                            f"Hello, am I speaking with {clean_name}? "
+                            "This is Viraj calling from Soil Systems."
+                        )
+                    },
+                },
                 "metadata": {
                     "lead_id": str(lead.id),
                     "zoho_lead_id": lead.zoho_lead_id,

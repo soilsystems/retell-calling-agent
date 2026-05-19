@@ -45,23 +45,33 @@ def _parse_exotel_response(response: httpx.Response) -> dict[str, Any]:
 
 
 async def connect_exotel_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
-    """Ask Exotel to bridge a call to the lead using the configured ExoML app."""
+    """Initiate an outbound Exotel call to the lead.
+
+    Exotel /Calls/connect flow:
+      - Exotel calls `From` (lead's phone number).
+      - The lead sees `CallerId` (your ExoPhone virtual number) on their screen.
+      - When the lead picks up, Exotel executes the ExoML app at `Url`,
+        which handles connecting the agent (via SIP / phone / IVR).
+    """
     settings = get_settings()
     account_sid = _required_setting("EXOTEL_ACCOUNT_SID", settings.EXOTEL_ACCOUNT_SID)
     api_key = _required_setting("EXOTEL_API_KEY", settings.EXOTEL_API_KEY)
     api_token = _required_setting("EXOTEL_API_TOKEN", settings.EXOTEL_API_TOKEN)
     subdomain = _required_setting("EXOTEL_SUBDOMAIN", settings.EXOTEL_SUBDOMAIN)
-    caller_id = _required_setting("EXOTEL_CALLER_ID or EXOTEL_PHONE_NUMBER", settings.EXOTEL_CALLER_ID or settings.EXOTEL_PHONE_NUMBER)
+    caller_id = _required_setting(
+        "EXOTEL_CALLER_ID or EXOTEL_PHONE_NUMBER",
+        settings.EXOTEL_CALLER_ID or settings.EXOTEL_PHONE_NUMBER,
+    )
     exoml_url = _required_setting("EXOTEL_EXOML_URL", settings.EXOTEL_EXOML_URL)
     status_callback = (
         settings.EXOTEL_STATUS_CALLBACK
         or f"{settings.BASE_URL.rstrip('/')}/webhooks/exotel/status"
     )
 
-    payload = {
-        "From": lead.phone,
-        "CallerId": caller_id,
-        "Url": exoml_url,
+    payload: dict[str, str] = {
+        "From": lead.phone,       # Lead's number — Exotel calls this
+        "CallerId": caller_id,    # Your ExoPhone — shown to the lead
+        "Url": exoml_url,         # ExoML app — runs when lead picks up
         "CallType": settings.EXOTEL_CALL_TYPE,
         "StatusCallback": status_callback,
     }

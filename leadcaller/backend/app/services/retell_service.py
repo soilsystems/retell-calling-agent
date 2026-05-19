@@ -53,6 +53,15 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
             "campaign": call_job.lead.campaign or "",
             "zoho_lead_id": call_job.lead.zoho_lead_id,
         },
+        # Pre-render the greeting so Retell doesn't need to substitute {{lead_name}}
+        # before the call connects — phone calls pre-generate begin_message before
+        # retell_llm_dynamic_variables are applied, unlike web calls.
+        "agent_override": {
+            "begin_message": (
+                f"Hello, am I speaking with {clean_name}? "
+                "This is Viraj calling from Soil Systems."
+            ),
+        },
         "webhook_url": f"{settings.BASE_URL.rstrip('/')}/webhooks/retell/call-completed",
     }
 

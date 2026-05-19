@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import WebhookEvent, WebhookSource
+from app.models import Lead, WebhookEvent, WebhookSource
 from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
@@ -136,3 +136,57 @@ async def exotel_status(request: Request) -> JSONResponse:
 
     logger.info("Exotel status callback received: %s", payload)
     return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@router.post("/retell/inbound")
+async def retell_inbound(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "invalid json"})
+
+    logger.info("Retell inbound webhook received payload: %s", payload)
+    from_number = payload.get("from_number")
+    
+    if not from_number:
+        return JSONResponse(status_code=200, content={})
+
+    # Resilient phone matching: extract digits and match the last 10 digits
+    from_clean = "".join(c for c in from_number if c.isdigit())
+    suffix = from_clean[-10:] if len(from_clean) >= 10 else from_clean
+
+    stmt = select(Lead).where(
+        (Lead.phone == from_number) | 
+        (Lead.phone.like(f"%{suffix}"))
+    )
+    result = await db.execute(stmt)
+    lead = result.scalars().first()
+
+    if not lead:
+        logger.info("No lead found matching from_number=%s", from_number)
+        return JSONResponse(status_code=200, content={})
+
+    logger.info("Found matching lead for inbound call: name=%s", lead.name)
+    
+    # Clean up name to remove trailing "(Sample)" or "(sample)" or "Test"
+    clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
+
+    variables = {
+        "lead_name": clean_name,
+        "language": lead.language_preference.value,
+        "city": lead.city or "",
+        "campaign": lead.campaign or "",
+        "zoho_lead_id": lead.zoho_lead_id,
+    }
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "dynamic_variables": variables,
+            "retell_llm_dynamic_variables": variables
+        }
+    )
+

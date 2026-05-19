@@ -41,12 +41,13 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
     call_job.started_at = _utcnow()
     await db.commit()
 
+    clean_name = call_job.lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
     body = {
         "from_number": settings.RETELL_FROM_NUMBER,
         "to_number": call_job.lead.phone,
         "agent_id": settings.RETELL_AGENT_ID,
         "retell_llm_dynamic_variables": {
-            "lead_name": call_job.lead.name,
+            "lead_name": clean_name,
             "language": call_job.lead.language_preference.value,
             "city": call_job.lead.city or "",
             "campaign": call_job.lead.campaign or "",

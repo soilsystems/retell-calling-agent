@@ -315,10 +315,11 @@ async def call_lead(
         return await connect_exotel_call(lead, db)
 
     # mode == "human": create a Retell web call and return the access token
+    clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
     web_call_body = {
         "agent_id": settings.RETELL_AGENT_ID,
         "retell_llm_dynamic_variables": {
-            "lead_name": lead.name,
+            "lead_name": clean_name,
             "language": lead.language_preference.value,
             "city": lead.city or "",
             "campaign": lead.campaign or "",

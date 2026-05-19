@@ -61,9 +61,10 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
     assert form["From"] == ["+919876543210"]
     assert form["CallerId"] == ["08000000000"]
     assert form["CallType"] == ["trans"]
-    assert '"lead_name":"Ravi"' in form["CustomField"][0]
-    assert '"city":"Bengaluru"' in form["CustomField"][0]
-    assert '"campaign":"May Campaign"' in form["CustomField"][0]
+    assert form["CustomField"] == ["Ravi"]
+    assert form["lead_name"] == ["Ravi"]
+    assert form["lead_city"] == ["Bengaluru"]
+    assert form["campaign"] == ["May Campaign"]
     assert result["status"] == "queued"
     assert result["mode"] == "exotel"
     assert db.rows[-1].operation == "exotel_connect_call"

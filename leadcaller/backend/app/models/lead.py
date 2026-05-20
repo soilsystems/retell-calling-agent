@@ -41,3 +41,4 @@ class Lead(Base):
     call_jobs = relationship("CallJob", back_populates="lead", cascade="all, delete-orphan")
     sync_logs = relationship("CrmSyncLog", back_populates="lead")
     followups = relationship("Followup", back_populates="lead")
+    whatsapp_logs = relationship("WhatsAppLog", back_populates="lead")

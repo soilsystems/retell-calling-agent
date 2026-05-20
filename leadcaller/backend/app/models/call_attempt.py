@@ -35,3 +35,4 @@ class CallAttempt(Base):
 
     call_job = relationship("CallJob", back_populates="attempts")
     followups = relationship("Followup", back_populates="call_attempt")
+    whatsapp_logs = relationship("WhatsAppLog", back_populates="call_attempt")

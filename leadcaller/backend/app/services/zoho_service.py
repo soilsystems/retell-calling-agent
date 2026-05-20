@@ -12,7 +12,18 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import CallAttempt, CallJob, CrmSyncLog, Followup, FollowupStatus, LanguagePreference, Lead, ZohoToken
+from app.models import (
+    CallAttempt,
+    CallJob,
+    CrmSyncLog,
+    Followup,
+    FollowupStatus,
+    LanguagePreference,
+    Lead,
+    WhatsAppLog,
+    WhatsAppLogStatus,
+    ZohoToken,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +212,16 @@ async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAtt
     return result.scalar_one_or_none()
 
 
+async def _latest_whatsapp_log(call_attempt_id: uuid.UUID, db: AsyncSession) -> WhatsAppLog | None:
+    result = await db.execute(
+        select(WhatsAppLog)
+        .where(WhatsAppLog.call_attempt_id == call_attempt_id)
+        .order_by(WhatsAppLog.sent_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 def _lead_status(interest_level: str | None) -> str | None:
     return {
         "Hot": "Hot Lead",
@@ -239,6 +260,12 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
         "AI_Call_Attempt_Count": 1,
         "Last_AI_Call_Time": _utcnow().isoformat(),
     }
+    whatsapp_log = await _latest_whatsapp_log(call_attempt_id, db)
+    if whatsapp_log:
+        fields["WhatsApp_Sent"] = whatsapp_log.status == WhatsAppLogStatus.sent
+        fields["WhatsApp_Template_Sent"] = whatsapp_log.template_name
+        fields["WhatsApp_Sent_At"] = whatsapp_log.sent_at.isoformat()
+
     lead_status = _lead_status(structured.get("interest_level"))
     if lead_status:
         fields["Lead_Status"] = lead_status
@@ -268,6 +295,58 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
         )
         await db.commit()
         logger.exception("Zoho lead sync failed for call_attempt_id=%s", call_attempt_id)
+
+
+async def update_zoho_whatsapp_status(
+    whatsapp_log_id: uuid.UUID,
+    db: AsyncSession | None = None,
+    retry_once: bool = True,
+) -> None:
+    if db is None:
+        async with AsyncSessionLocal() as session:
+            await update_zoho_whatsapp_status(whatsapp_log_id, session, retry_once=retry_once)
+        return
+
+    settings = get_settings()
+    result = await db.execute(
+        select(WhatsAppLog).options(selectinload(WhatsAppLog.lead)).where(WhatsAppLog.id == whatsapp_log_id)
+    )
+    whatsapp_log = result.scalar_one_or_none()
+    if not whatsapp_log:
+        return
+
+    access_token = await get_zoho_access_token(db)
+    fields = {
+        "WhatsApp_Sent": whatsapp_log.status == WhatsAppLogStatus.sent,
+        "WhatsApp_Template_Sent": whatsapp_log.template_name,
+        "WhatsApp_Sent_At": whatsapp_log.sent_at.isoformat(),
+    }
+
+    try:
+        response = await _request_with_retry(
+            "PATCH",
+            f"{settings.ZOHO_API_DOMAIN}/crm/v6/Leads/{whatsapp_log.lead.zoho_lead_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {access_token}"},
+            json={"data": [fields]},
+        )
+        response.raise_for_status()
+        db.add(CrmSyncLog(lead_id=whatsapp_log.lead_id, operation="update_lead_whatsapp", success=True))
+        await db.commit()
+    except Exception as exc:
+        if retry_once:
+            await asyncio.sleep(60)
+            await update_zoho_whatsapp_status(whatsapp_log_id, db, retry_once=False)
+            return
+        db.add(
+            CrmSyncLog(
+                lead_id=whatsapp_log.lead_id,
+                operation="update_lead_whatsapp",
+                success=False,
+                error_message=str(exc),
+            )
+        )
+        await db.commit()
+        logger.exception("Zoho WhatsApp sync failed for whatsapp_log_id=%s", whatsapp_log_id)
 
 
 async def create_followup_task(call_attempt_id: uuid.UUID, db: AsyncSession | None = None) -> None:

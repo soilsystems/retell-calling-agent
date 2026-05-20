@@ -16,6 +16,7 @@ from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
 from app.services.retell_service import process_retell_completion, retell_event_key, schedule_retry, trigger_retell_call
+from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
 
@@ -116,6 +117,7 @@ async def retell_call_completed(
     attempt = await process_retell_completion(payload, webhook_event, db)
     if attempt:
         background_tasks.add_task(sync_to_zoho, attempt.id)
+        background_tasks.add_task(send_whatsapp_for_call, attempt.id)
         structured = attempt.structured_data or {}
         if structured.get("follow_up_required"):
             background_tasks.add_task(create_followup_task, attempt.id)

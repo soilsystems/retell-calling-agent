@@ -14,6 +14,8 @@ class RetellStructuredData(BaseModel):
     language: str | None = None
     follow_up_required: bool = False
     follow_up_time: datetime | None = None
+    site_visit_agreed: bool = False
+    site_visit_day: str | None = None
 
 
 class RetellCallCompletedWebhook(BaseModel):

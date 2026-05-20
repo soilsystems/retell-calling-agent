@@ -34,3 +34,9 @@ class FollowupStatus(StrEnum):
     pending = "pending"
     created = "created"
     failed = "failed"
+
+
+class WhatsAppLogStatus(StrEnum):
+    sent = "sent"
+    failed = "failed"
+    skipped = "skipped"

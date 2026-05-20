@@ -26,6 +26,8 @@ os.environ.setdefault("RETELL_AGENT_ID", "agent-id")
 os.environ.setdefault("RETELL_AGENT_VERSION", "3")
 os.environ.setdefault("RETELL_FROM_NUMBER", "+911234567890")
 os.environ.setdefault("RETELL_WEBHOOK_SECRET", "retell-webhook-secret")
+os.environ.setdefault("WATI_API_ENDPOINT", "https://live-test.wati.io")
+os.environ.setdefault("WATI_API_TOKEN", "wati-token")
 os.environ.setdefault("BASE_URL", "https://leadcaller.example.com")
 os.environ.setdefault("ENVIRONMENT", "dev")
 

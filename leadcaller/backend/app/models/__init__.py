@@ -8,10 +8,12 @@ from app.models.enums import (
     FollowupStatus,
     LanguagePreference,
     WebhookSource,
+    WhatsAppLogStatus,
 )
 from app.models.followup import Followup
 from app.models.lead import Lead
 from app.models.webhook_event import WebhookEvent
+from app.models.whatsapp_log import WhatsAppLog
 from app.models.zoho_token import ZohoToken
 
 __all__ = [
@@ -27,5 +29,7 @@ __all__ = [
     "Lead",
     "WebhookEvent",
     "WebhookSource",
+    "WhatsAppLog",
+    "WhatsAppLogStatus",
     "ZohoToken",
 ]

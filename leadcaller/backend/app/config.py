@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     RETELL_API_KEY: str
     RETELL_AGENT_ID: str
+    RETELL_AGENT_VERSION: int | None = None
     RETELL_FROM_NUMBER: str
     RETELL_WEBHOOK_SECRET: str
     RETELL_IMPORT_PHONE_NUMBER_ENDPOINT: str = "https://api.retellai.com/v2/import-phone-number"

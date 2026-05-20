@@ -55,6 +55,8 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
         },
         "webhook_url": f"{settings.BASE_URL.rstrip('/')}/webhooks/retell/call-completed",
     }
+    if settings.RETELL_AGENT_VERSION is not None:
+        body["override_agent_version"] = settings.RETELL_AGENT_VERSION
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:

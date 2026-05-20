@@ -198,6 +198,7 @@ async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
     assert response.status_code == 200
     body = response.json()
     variables = body["call_inbound"]["dynamic_variables"]
+    assert body["call_inbound"]["override_agent_version"] == 3
     assert variables["lead_name"] == "Ravi Chandra"
     assert variables["customer_name"] == "Ravi Chandra"
     assert variables["phone"] == "+918746905010"

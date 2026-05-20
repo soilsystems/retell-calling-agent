@@ -166,6 +166,7 @@ async def retell_inbound(
 
     logger.info("Found matching lead for inbound call: name=%s", lead.name)
     clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
+    settings = get_settings()
 
     variables = {
         "lead_name": clean_name,
@@ -178,33 +179,35 @@ async def retell_inbound(
         "zoho_lead_id": lead.zoho_lead_id,
     }
 
+    call_inbound_response = {
+        "override_agent_id": settings.RETELL_AGENT_ID,
+        "dynamic_variables": variables,
+        "agent_override": {
+            "retell_llm": {
+                "begin_message": (
+                    f"Hello, am I speaking with {clean_name}? "
+                    "This is Viraj calling from Soil Systems."
+                )
+            },
+            "conversation_flow": {
+                "begin_message": (
+                    f"Hello, am I speaking with {clean_name}? "
+                    "This is Viraj calling from Soil Systems."
+                )
+            },
+        },
+        "metadata": {
+            "lead_id": str(lead.id),
+            "zoho_lead_id": lead.zoho_lead_id,
+            "source": "leadcaller_retell_inbound",
+        },
+    }
+    if settings.RETELL_AGENT_VERSION is not None:
+        call_inbound_response["override_agent_version"] = settings.RETELL_AGENT_VERSION
+
     return JSONResponse(
         status_code=200,
-        content={
-            "call_inbound": {
-                "override_agent_id": get_settings().RETELL_AGENT_ID,
-                "dynamic_variables": variables,
-                "agent_override": {
-                    "retell_llm": {
-                        "begin_message": (
-                            f"Hello, am I speaking with {clean_name}? "
-                            "This is Viraj calling from Soil Systems."
-                        )
-                    },
-                    "conversation_flow": {
-                        "begin_message": (
-                            f"Hello, am I speaking with {clean_name}? "
-                            "This is Viraj calling from Soil Systems."
-                        )
-                    },
-                },
-                "metadata": {
-                    "lead_id": str(lead.id),
-                    "zoho_lead_id": lead.zoho_lead_id,
-                    "source": "leadcaller_retell_inbound",
-                },
-            }
-        },
+        content={"call_inbound": call_inbound_response},
     )
 
 

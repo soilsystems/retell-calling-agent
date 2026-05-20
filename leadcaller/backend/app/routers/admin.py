@@ -326,6 +326,9 @@ async def call_lead(
             "zoho_lead_id": lead.zoho_lead_id,
         },
     }
+    if settings.RETELL_AGENT_VERSION is not None:
+        web_call_body["agent_version"] = settings.RETELL_AGENT_VERSION
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(

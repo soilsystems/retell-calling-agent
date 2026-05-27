@@ -307,3 +307,60 @@ async def send_whatsapp_for_call(
         if retry_once:
             await asyncio.sleep(300)
             await send_whatsapp_for_call(call_attempt_id, db, retry_once=False)
+
+
+async def send_whatsapp_call_completed(
+    lead_name: str,
+    phone: str,
+    summary: str | None = None,
+) -> dict[str, Any] | None:
+    """Send call completed template manually."""
+    settings = get_settings()
+    clean = _clean_name(lead_name)
+    params = [{"name": "lead_name", "value": clean}]
+    async with AsyncSessionLocal() as session:
+        return await send_whatsapp(phone, settings.EXOTEL_WA_TEMPLATE_COMPLETED, params, session)
+
+
+async def send_whatsapp_call_missed(
+    lead_name: str,
+    phone: str,
+) -> dict[str, Any] | None:
+    """Send missed call template manually."""
+    settings = get_settings()
+    clean = _clean_name(lead_name)
+    params = [{"name": "lead_name", "value": clean}]
+    async with AsyncSessionLocal() as session:
+        return await send_whatsapp(phone, settings.EXOTEL_WA_TEMPLATE_MISSED, params, session)
+
+
+async def send_whatsapp_custom(
+    phone: str,
+    text: str,
+) -> dict[str, Any] | None:
+    """Send custom free-text WhatsApp message."""
+    import base64
+    settings = get_settings()
+    url = (
+        f"https://{settings.EXOTEL_WA_SUBDOMAIN}"
+        f"/v2/accounts/{settings.EXOTEL_WA_ACCOUNT_SID}/messages"
+    )
+    raw = f"{settings.EXOTEL_WA_API_KEY}:{settings.EXOTEL_WA_API_TOKEN}"
+    b64 = base64.b64encode(raw.encode()).decode()
+    headers = {
+        "Authorization": f"Basic {b64}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "from": settings.EXOTEL_WA_PHONE_NUMBER,
+        "to": phone if phone.startswith("+") else f"+{phone}",
+        "content": {
+            "type": "text",
+            "text": {"body": text},
+        },
+        "custom_data": str(uuid.uuid4()),
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, headers=headers, json=payload)
+    return response.json()
+

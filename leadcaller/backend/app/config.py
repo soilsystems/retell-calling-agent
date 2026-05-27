@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     RETELL_WEBHOOK_SECRET: str
     RETELL_IMPORT_PHONE_NUMBER_ENDPOINT: str = "https://api.retellai.com/v2/import-phone-number"
 
-    WATI_API_ENDPOINT: str
-    WATI_API_TOKEN: str
+    WATI_API_ENDPOINT: str | None = None
+    WATI_API_TOKEN: str | None = None
 
     EXOTEL_ACCOUNT_SID: str | None = None
     EXOTEL_API_KEY: str | None = None

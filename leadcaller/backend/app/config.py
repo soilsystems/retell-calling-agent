@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     EXOTEL_STATUS_CALLBACK: str | None = None
     EXOTEL_CALL_TYPE: Literal["trans", "promo"] = "trans"
 
+    # Exotel WhatsApp Business API
+    EXOTEL_WA_API_KEY: str | None = None
+    EXOTEL_WA_API_TOKEN: str | None = None
+    EXOTEL_WA_ACCOUNT_SID: str | None = None
+    EXOTEL_WA_SUBDOMAIN: str = "api.in.exotel.com"
+    EXOTEL_WA_PHONE_NUMBER: str | None = None
+    EXOTEL_WA_TEMPLATE_COMPLETED: str = "call_followup"
+    EXOTEL_WA_TEMPLATE_MISSED: str = "call_missed"
+    BOOKING_LINK: str = "https://soilsystems.in/book"
+
     BASE_URL: str
     ENVIRONMENT: Literal["dev", "staging", "prod"] = "dev"
     LOG_LEVEL: str = "INFO"

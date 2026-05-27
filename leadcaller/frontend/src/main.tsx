@@ -10,6 +10,7 @@ import {
   Database,
   ExternalLink,
   Headphones,
+  MessageCircle,
   Mic,
   MicOff,
   Phone,
@@ -115,7 +116,7 @@ type Health = {
   environment: string;
 };
 
-type TabKey = "overview" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync";
+type TabKey = "overview" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync" | "whatsapp";
 
 const tabs: Array<{ key: TabKey; label: string; icon: IconComponent }> = [
   { key: "overview", label: "Overview", icon: BarChart3 },
@@ -124,7 +125,8 @@ const tabs: Array<{ key: TabKey; label: string; icon: IconComponent }> = [
   { key: "attempts", label: "Attempts", icon: Headphones },
   { key: "webhooks", label: "Webhooks", icon: Webhook },
   { key: "followups", label: "Follow-ups", icon: CalendarClock },
-  { key: "sync", label: "CRM Sync", icon: RefreshCcw }
+  { key: "sync", label: "CRM Sync", icon: RefreshCcw },
+  { key: "whatsapp", label: "WhatsApp", icon: MessageCircle }
 ];
 
 const fmtDate = (value?: string | null) => {
@@ -450,6 +452,7 @@ function App() {
   const [activeTab, setActiveTab] = React.useState<TabKey>("overview");
   const [query, setQuery] = React.useState("");
   const [callingLead, setCallingLead] = React.useState<Lead | null>(null);
+  const [whatsAppLead, setWhatsAppLead] = React.useState<Lead | null>(null);
   const data = useDashboardData();
 
   const filteredLeads = data.leads.filter((lead) =>
@@ -463,6 +466,7 @@ function App() {
   return (
     <div className="shell">
       {callingLead && <CallModal lead={callingLead} onClose={() => setCallingLead(null)} />}
+      {whatsAppLead && <WhatsAppModal lead={whatsAppLead} onClose={() => setWhatsAppLead(null)} />}
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark"><Activity size={22} /></div>
@@ -543,12 +547,13 @@ function App() {
         )}
 
         {activeTab === "overview" && <Overview summary={data.summary} loading={data.loading} />}
-        {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} />}
+        {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={setWhatsAppLead} />}
         {activeTab === "jobs" && <JobsTable jobs={data.jobs} onRefresh={data.load} />}
         {activeTab === "attempts" && <AttemptsTable attempts={data.attempts} />}
         {activeTab === "webhooks" && <WebhooksTable webhooks={data.webhooks} />}
         {activeTab === "followups" && <FollowupsTable followups={data.followups} />}
         {activeTab === "sync" && <SyncLogsTable logs={data.syncLogs} />}
+        {activeTab === "whatsapp" && <WhatsAppPanel leads={data.leads} onRefresh={data.load} />}
       </main>
     </div>
   );
@@ -624,7 +629,15 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
   );
 }
 
-function LeadsTable({ leads, onCallLead }: { leads: Lead[]; onCallLead: (lead: Lead) => void }) {
+function LeadsTable({
+  leads,
+  onCallLead,
+  onWhatsAppLead
+}: {
+  leads: Lead[];
+  onCallLead: (lead: Lead) => void;
+  onWhatsAppLead: (lead: Lead) => void;
+}) {
   return (
     <Table title="Leads" count={leads.length}>
       <thead>
@@ -636,7 +649,7 @@ function LeadsTable({ leads, onCallLead }: { leads: Lead[]; onCallLead: (lead: L
           <th>Call Status</th>
           <th>Intent</th>
           <th>Created</th>
-          <th>Call</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -654,15 +667,27 @@ function LeadsTable({ leads, onCallLead }: { leads: Lead[]; onCallLead: (lead: L
             <td><Badge value={lead.latest_interest_level} /></td>
             <td>{fmtDate(lead.created_at)}</td>
             <td>
-              <button
-                id={`call-lead-${lead.id}`}
-                className="callLeadBtn"
-                onClick={() => onCallLead(lead)}
-                title={`Call ${lead.name}`}
-              >
-                <Phone size={15} />
-                <span>Call</span>
-              </button>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  id={`call-lead-${lead.id}`}
+                  className="callLeadBtn"
+                  onClick={() => onCallLead(lead)}
+                  title={`Call ${lead.name}`}
+                >
+                  <Phone size={13} />
+                  <span>Call</span>
+                </button>
+                <button
+                  id={`wa-lead-${lead.id}`}
+                  className="callLeadBtn"
+                  style={{ backgroundColor: "#25d366", borderColor: "#25d366" }}
+                  onClick={() => onWhatsAppLead(lead)}
+                  title={`WhatsApp ${lead.name}`}
+                >
+                  <MessageCircle size={13} />
+                  <span>Chat</span>
+                </button>
+              </div>
             </td>
           </tr>
         ))}
@@ -857,6 +882,294 @@ function Table({ title, count, children }: { title: string; count: number; child
       </div>
       <div className="tableWrap">
         <table>{children}</table>
+      </div>
+    </section>
+  );
+}
+
+// ─── WhatsApp Modal ────────────────────────────────────────────────────────
+function WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
+  const [loading, setLoading] = React.useState(false);
+  const [successMsg, setSuccessMsg] = React.useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+  const [customText, setCustomText] = React.useState("");
+
+  const triggerNudge = async (type: "completed" | "missed") => {
+    setLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const res = await fetch("/whatsapp/send-nudge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead_id: lead.id, nudge_type: type })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to trigger WhatsApp nudge");
+      setSuccessMsg(data.message || `Successfully sent ${type} message!`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Error sending message");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendCustom = async () => {
+    if (!customText.trim()) return;
+    setLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const res = await fetch("/whatsapp/send-custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: lead.phone, text: customText })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to send custom message");
+      setSuccessMsg("Custom WhatsApp message sent!");
+      setCustomText("");
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Error sending message");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modalOverlay" onClick={onClose}>
+      <div className="modalCard" onClick={(e) => e.stopPropagation()}>
+        <div className="modalHeader">
+          <div className="modalLeadInfo">
+            <div className="modalAvatar" style={{ backgroundColor: "#25d366" }}><MessageCircle size={20} /></div>
+            <div>
+              <strong>WhatsApp Follow-up</strong>
+              <span>{lead.name} ({lead.phone})</span>
+            </div>
+          </div>
+          <button className="modalClose" onClick={onClose} title="Close">✕</button>
+        </div>
+
+        {successMsg && (
+          <div className="notice goodNotice" style={{ margin: "16px 20px" }}>
+            <CheckCircle2 size={16} />
+            <span>{successMsg}</span>
+          </div>
+        )}
+
+        {errorMsg && (
+          <div className="notice badNotice" style={{ margin: "16px 20px" }}>
+            <AlertCircle size={16} />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
+        <div className="callOptions" style={{ padding: "0 20px 20px" }}>
+          <p className="callHint">Send a pre-approved template or custom message</p>
+          
+          <button 
+            className="callOption" 
+            style={{ borderColor: "rgba(37, 211, 102, 0.2)", width: "100%", cursor: "pointer" }} 
+            disabled={loading}
+            onClick={() => void triggerNudge("completed")}
+          >
+            <div className="callOptionIcon" style={{ color: "#25d366" }}><CheckCircle2 size={24} /></div>
+            <div style={{ textAlign: "left" }}>
+              <strong>Send Completed Call Follow-up</strong>
+              <span>Pre-approved Exotel template with booking link</span>
+            </div>
+          </button>
+
+          <button 
+            className="callOption" 
+            style={{ borderColor: "rgba(37, 211, 102, 0.2)", width: "100%", cursor: "pointer" }}
+            disabled={loading}
+            onClick={() => void triggerNudge("missed")}
+          >
+            <div className="callOptionIcon" style={{ color: "#eab308" }}><PhoneOff size={24} /></div>
+            <div style={{ textAlign: "left" }}>
+              <strong>Send Missed Call Nudge</strong>
+              <span>Pre-approved Exotel template for no-answers</span>
+            </div>
+          </button>
+
+          <div style={{ marginTop: 20 }}>
+            <label style={{ display: "block", marginBottom: 6, fontWeight: "bold", fontSize: 13, color: "#94a3b8" }}>
+              Custom Direct Message
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                className="customInput"
+                style={{
+                  flex: 1,
+                  background: "rgba(255, 255, 255, 0.05)",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                  borderRadius: 6,
+                  padding: "8px 12px",
+                  color: "#fff",
+                  outline: "none"
+                }}
+                placeholder="Type custom text..."
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value)}
+                disabled={loading}
+              />
+              <button 
+                className="callLeadBtn" 
+                style={{ backgroundColor: "#25d366", borderColor: "#25d366", color: "#fff" }}
+                disabled={loading || !customText.trim()}
+                onClick={() => void sendCustom()}
+              >
+                <Send size={14} />
+                <span>Send</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── WhatsApp Panel ────────────────────────────────────────────────────────
+function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => void }) {
+  const [phone, setPhone] = React.useState("");
+  const [name, setName] = React.useState("");
+  const [template, setTemplate] = React.useState<"completed" | "missed">("completed");
+  const [activeLead, setActiveLead] = React.useState<string>("");
+  const [loading, setLoading] = React.useState(false);
+  const [success, setSuccess] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const handleSendTemplate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!phone || !name) return;
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await fetch("/whatsapp/send-template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, lead_name: name, template_type: template })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to send template");
+      setSuccess(`WhatsApp template message successfully enqueued for ${name}!`);
+      setPhone("");
+      setName("");
+      setActiveLead("");
+      void onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error sending message");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeLead) {
+      const lead = leads.find(l => l.id === activeLead);
+      if (lead) {
+        setPhone(lead.phone);
+        setName(lead.name);
+      }
+    } else {
+      setPhone("");
+      setName("");
+    }
+  }, [activeLead, leads]);
+
+  return (
+    <section className="content">
+      {success && <div className="notice goodNotice"><CheckCircle2 size={18} /><span>{success}</span></div>}
+      {error && <div className="notice badNotice"><AlertCircle size={18} /><span>{error}</span></div>}
+
+      <div className="split">
+        <div className="panel">
+          <h3>Exotel WhatsApp Configuration</h3>
+          <div className="pipeline" style={{ gap: 12, marginTop: 16 }}>
+            <div className="pipelineItem info" style={{ padding: 16, borderRadius: 8 }}>
+              <span>Integration Status</span>
+              <strong>Active & Configured</strong>
+            </div>
+            <div className="pipelineItem good" style={{ padding: 16, borderRadius: 8 }}>
+              <span>Provider</span>
+              <strong>Exotel v2 API</strong>
+            </div>
+          </div>
+          <div className="links" style={{ marginTop: 24 }}>
+            <a href="https://my.exotel.com" target="_blank" rel="noreferrer">Exotel Dashboard <ExternalLink size={14} /></a>
+            <a href="https://business.facebook.com" target="_blank" rel="noreferrer">Meta WhatsApp Manager <ExternalLink size={14} /></a>
+          </div>
+        </div>
+
+        <div className="panel">
+          <h3>Trigger Template Message</h3>
+          <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+            <button 
+              type="button"
+              className="tableAction" 
+              style={{ flex: 1, backgroundColor: template === "completed" ? "#25d366" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
+              onClick={() => setTemplate("completed")}
+            >
+              Completed Follow-up
+            </button>
+            <button 
+              type="button"
+              className="tableAction" 
+              style={{ flex: 1, backgroundColor: template === "missed" ? "#eab308" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
+              onClick={() => setTemplate("missed")}
+            >
+              Missed Call Nudge
+            </button>
+          </div>
+
+          <form onSubmit={handleSendTemplate} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Select Lead (Optional)</label>
+              <select 
+                value={activeLead} 
+                onChange={e => setActiveLead(e.target.value)} 
+                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }}
+              >
+                <option value="">-- Choose Lead --</option>
+                {leads.map(l => (
+                  <option key={l.id} value={l.id}>{l.name} ({l.phone})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Lead Name</label>
+              <input 
+                value={name} 
+                onChange={e => setName(e.target.value)} 
+                placeholder="e.g. Darshan" 
+                required 
+                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }} 
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Phone Number (with Country Code)</label>
+              <input 
+                value={phone} 
+                onChange={e => setPhone(e.target.value)} 
+                placeholder="e.g. +91XXXXXXXXXX" 
+                required 
+                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }} 
+              />
+            </div>
+            <button 
+              type="submit" 
+              disabled={loading} 
+              className="callLeadBtn" 
+              style={{ backgroundColor: "#25d366", borderColor: "#25d366", color: "#fff", width: "100%", padding: "12px", marginTop: 10, cursor: "pointer" }}
+            >
+              <Send size={15} />
+              <span>{loading ? "Sending Notification..." : `Send ${template.charAt(0).toUpperCase() + template.slice(1)} Template`}</span>
+            </button>
+          </form>
+        </div>
       </div>
     </section>
   );

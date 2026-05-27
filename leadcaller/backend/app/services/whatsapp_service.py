@@ -167,25 +167,51 @@ async def send_whatsapp(
     *,
     attach_brochure: bool = False,
 ) -> dict[str, Any]:
+    import base64
     settings = get_settings()
-    body: dict[str, Any] = {
-        "template_name": template_name,
-        "broadcast_name": BROADCAST_NAME,
-        "parameters": parameters,
-        "receivers": [{"whatsappNumber": lead_phone, "customParams": []}],
-    }
+    
+    # Exotel WhatsApp endpoint
+    url = (
+        f"https://{settings.EXOTEL_WA_SUBDOMAIN}"
+        f"/v2/accounts/{settings.EXOTEL_WA_ACCOUNT_SID}/messages"
+    )
+    
+    # Convert WATI-like parameter format to flat list of strings for Exotel
+    flat_params = [p["value"] for p in parameters]
     if attach_brochure:
-        body["headerValue"] = BROCHURE_URL
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            f"{settings.WATI_API_ENDPOINT.rstrip('/')}/api/v1/sendTemplateMessage",
-            headers={
-                "Authorization": f"Bearer {settings.WATI_API_TOKEN}",
-                "Content-Type": "application/json",
+        flat_params.append(settings.BOOKING_LINK)
+    
+    # Base64 Basic Auth
+    raw = f"{settings.EXOTEL_WA_API_KEY}:{settings.EXOTEL_WA_API_TOKEN}"
+    b64 = base64.b64encode(raw.encode()).decode()
+    headers = {
+        "Authorization": f"Basic {b64}",
+        "Content-Type": "application/json",
+    }
+    
+    payload = {
+        "from": settings.EXOTEL_WA_PHONE_NUMBER,
+        "to": lead_phone if lead_phone.startswith("+") else f"+{lead_phone}",
+        "content": {
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": "en"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": val} for val in flat_params
+                        ],
+                    }
+                ],
             },
-            json=body,
-        )
+        },
+        "custom_data": str(uuid.uuid4()),
+    }
+    
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, headers=headers, json=payload)
 
     response_payload: dict[str, Any]
     try:
@@ -194,7 +220,7 @@ async def send_whatsapp(
         response_payload = {"text": response.text}
 
     if response.status_code >= 400:
-        raise RuntimeError(f"WATI API failed with status {response.status_code}: {response_payload}")
+        raise RuntimeError(f"Exotel API failed with status {response.status_code}: {response_payload}")
     return response_payload
 
 

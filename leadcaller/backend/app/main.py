@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers.admin import router as admin_router
 from app.routers.webhooks import router as webhooks_router
+from app.routers.whatsapp import router as whatsapp_router
 
 
 settings = get_settings()
@@ -33,6 +34,7 @@ app.add_middleware(
 
 app.include_router(admin_router)
 app.include_router(webhooks_router)
+app.include_router(whatsapp_router)
 
 
 @app.get("/health")

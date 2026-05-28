@@ -257,42 +257,18 @@ const retellClient = new RetellWebClient();
 function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
   const [callState, setCallState] = React.useState<CallState>("choosing");
   const [error, setError] = React.useState<string | null>(null);
-  const [isMuted, setIsMuted] = React.useState(false);
   const [activeMode, setActiveMode] = React.useState<"ai" | "human" | "exotel" | null>(null);
+  const [showPhoneInput, setShowPhoneInput] = React.useState(false);
+  const [agentPhone, setAgentPhone] = React.useState(() => {
+    return localStorage.getItem("agent_phone") || "";
+  });
 
-  const cleanup = React.useCallback(() => {
-    try { retellClient.stopCall(); } catch {}
-  }, []);
-
-  React.useEffect(() => {
-    retellClient.on("call_started", () => setCallState("live"));
-    retellClient.on("call_ended", () => setCallState("ended"));
-    retellClient.on("error", (err) => {
-      setError(String(err));
-      setCallState("ended");
-    });
-    return cleanup;
-  }, [cleanup]);
-
-  const initiateAI = async () => {
-    setActiveMode("ai");
-    setCallState("connecting");
-    setError(null);
-    try {
-      const res = await fetch(`/admin/leads/${lead.id}/call`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "ai" })
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setCallState("live");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to queue AI call");
-      setCallState("choosing");
+  const initiateHuman = async (phone: string) => {
+    if (!phone || phone.trim() === "") {
+      setError("Please enter your phone number first.");
+      return;
     }
-  };
-
-  const initiateHuman = async () => {
+    localStorage.setItem("agent_phone", phone.trim());
     setActiveMode("human");
     setCallState("connecting");
     setError(null);
@@ -300,13 +276,12 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
       const res = await fetch(`/admin/leads/${lead.id}/call`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "human" })
+        body: JSON.stringify({ mode: "human", agent_phone: phone.trim() })
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      await retellClient.startCall({ accessToken: data.access_token });
+      setCallState("ended");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start call");
+      setError(err instanceof Error ? err.message : "Failed to connect bridge call");
       setCallState("choosing");
     }
   };
@@ -326,21 +301,6 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Exotel call");
       setCallState("choosing");
-    }
-  };
-
-  const hangup = () => {
-    cleanup();
-    setCallState("ended");
-  };
-
-  const toggleMute = () => {
-    const next = !isMuted;
-    setIsMuted(next);
-    if (next) {
-      retellClient.mute();
-    } else {
-      retellClient.unmute();
     }
   };
 
@@ -368,27 +328,82 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
         {callState === "choosing" && (
           <div className="callOptions">
             <p className="callHint">How would you like to call this lead?</p>
-            <button className="callOption aiOption" id="btn-ai-talk" onClick={() => void initiateAI()}>
-              <div className="callOptionIcon"><Bot size={28} /></div>
-              <div>
-                <strong>Let AI Talk</strong>
-                <span>Retell AI agent calls the lead and qualifies them automatically</span>
+            {!showPhoneInput ? (
+              <>
+                <button className="callOption aiOption" id="btn-ai-talk" onClick={() => void initiateExotel()}>
+                  <div className="callOptionIcon"><Bot size={28} /></div>
+                  <div>
+                    <strong>Let AI Talk</strong>
+                    <span>Exotel places the call and bridges to Retell AI agent automatically</span>
+                  </div>
+                </button>
+                <button className="callOption humanOption" id="btn-human-talk" onClick={() => setShowPhoneInput(true)}>
+                  <div className="callOptionIcon"><Mic size={28} /></div>
+                  <div>
+                    <strong>Let Me Talk</strong>
+                    <span>Connect you directly to the lead via physical phone bridge</span>
+                  </div>
+                </button>
+              </>
+            ) : (
+              <div className="phoneBridgeInput" style={{ width: "100%", padding: "10px 0" }}>
+                <p className="callHint" style={{ marginBottom: 12, fontSize: "0.95rem" }}>
+                  Enter your phone number to receive the call from Exotel:
+                </p>
+                <div style={{ display: "flex", gap: 10, width: "100%", justifyContent: "center", marginBottom: 12 }}>
+                  <input 
+                    type="text" 
+                    className="bridgeInput"
+                    placeholder="e.g., +91XXXXXXXXXX" 
+                    value={agentPhone}
+                    onChange={(e) => setAgentPhone(e.target.value)}
+                    style={{ 
+                      padding: "10px 14px", 
+                      borderRadius: 8, 
+                      border: "1px solid rgba(255,255,255,0.1)", 
+                      background: "rgba(0,0,0,0.2)", 
+                      color: "white", 
+                      outline: "none",
+                      flex: 1,
+                      fontSize: "0.95rem"
+                    }}
+                  />
+                  <button 
+                    className="bridgeSubmit"
+                    onClick={() => void initiateHuman(agentPhone)}
+                    style={{
+                      padding: "10px 20px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                      color: "white",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontSize: "0.95rem"
+                    }}
+                  >
+                    Connect Call
+                  </button>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <button 
+                    className="bridgeCancel"
+                    onClick={() => setShowPhoneInput(false)}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      background: "transparent",
+                      color: "rgba(255,255,255,0.7)",
+                      cursor: "pointer",
+                      fontSize: "0.85rem"
+                    }}
+                  >
+                    ← Back to options
+                  </button>
+                </div>
               </div>
-            </button>
-            <button className="callOption humanOption" id="btn-human-talk" onClick={() => void initiateHuman()}>
-              <div className="callOptionIcon"><Mic size={28} /></div>
-              <div>
-                <strong>Let Me Talk</strong>
-                <span>Connect you directly to the lead via browser call</span>
-              </div>
-            </button>
-            <button className="callOption exotelOption" id="btn-exotel-call" onClick={() => void initiateExotel()}>
-              <div className="callOptionIcon"><PhoneCall size={28} /></div>
-              <div>
-                <strong>Call via Exotel</strong>
-                <span>Exotel places the call using the configured ExoML app</span>
-              </div>
-            </button>
+            )}
           </div>
         )}
 
@@ -396,37 +411,10 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
           <div className="callStatus">
             <div className="pulseRing" />
             <p>
-              {activeMode === "ai"
-                ? "Dispatching AI agent..."
-                : activeMode === "exotel"
-                  ? "Requesting Exotel call..."
-                  : "Connecting your microphone..."}
+              {activeMode === "exotel"
+                ? "Requesting Exotel call..."
+                : "Requesting Exotel bridge call..."}
             </p>
-          </div>
-        )}
-
-        {callState === "live" && activeMode === "ai" && (
-          <div className="callStatus">
-            <div className="liveDot" />
-            <p>AI agent is calling <strong>{lead.name}</strong></p>
-            <small>Call dispatched — check Call Jobs for status updates</small>
-          </div>
-        )}
-
-        {callState === "live" && activeMode === "human" && (
-          <div className="callActive">
-            <div className="callActiveDot" />
-            <p>Live call with <strong>{lead.name}</strong></p>
-            <div className="callControls">
-              <button className={`callCtrlBtn ${isMuted ? "mutedBtn" : ""}`} onClick={toggleMute} title={isMuted ? "Unmute" : "Mute"}>
-                {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                <span>{isMuted ? "Unmute" : "Mute"}</span>
-              </button>
-              <button className="callCtrlBtn hangupBtn" onClick={hangup} title="End call">
-                <PhoneOff size={18} />
-                <span>Hang Up</span>
-              </button>
-            </div>
           </div>
         )}
 
@@ -434,10 +422,10 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
           <div className="callStatus">
             <CheckCircle2 size={40} color="#047857" />
             <p>
-              {activeMode === "ai"
-                ? "AI call queued successfully"
-                : activeMode === "exotel"
-                  ? "Exotel call request sent"
+              {activeMode === "exotel"
+                ? "Exotel call request sent"
+                : activeMode === "human"
+                  ? "Bridge call requested. Check your phone!"
                   : "Call ended"}
             </p>
             <button className="tableAction" style={{ marginTop: 8 }} onClick={onClose}>Close</button>

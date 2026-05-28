@@ -57,13 +57,26 @@ def make_attempt(phone="+919876543210", name="Rahul", structured=None):
 
 
 @pytest.fixture
-def wati_settings(monkeypatch):
+def exotel_wa_settings(monkeypatch):
     settings = SimpleNamespace(
-        WATI_API_ENDPOINT="https://live-test.wati.io",
-        WATI_API_TOKEN="wati-token",
+        EXOTEL_WA_SUBDOMAIN="api.in.exotel.com",
+        EXOTEL_WA_ACCOUNT_SID="test-account-sid",
+        EXOTEL_WA_API_KEY="test-api-key",
+        EXOTEL_WA_API_TOKEN="test-api-token",
+        EXOTEL_WA_PHONE_NUMBER="+918046376848",
+        BOOKING_LINK="https://soilsystems.in/book",
+        EXOTEL_WA_TEMPLATE_COMPLETED="call_followup",
+        EXOTEL_WA_TEMPLATE_MISSED="call_missed",
     )
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: settings)
     return settings
+
+
+@pytest.fixture(autouse=True)
+def mock_sleep(monkeypatch):
+    async def fake_sleep(seconds):
+        return None
+    monkeypatch.setattr("app.services.whatsapp_service.asyncio.sleep", fake_sleep)
 
 
 @pytest.fixture
@@ -92,27 +105,26 @@ def assert_sent_log(db, template_name):
 
 
 @pytest.mark.asyncio
-async def test_site_visit_agreed_sends_template_1(monkeypatch, wati_settings, disable_zoho_update):
+async def test_site_visit_agreed_sends_template_1(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert_sent_log(db, SITE_VISIT_TEMPLATE)
     body = route.calls.last.request.read().decode()
     assert "soil_systems_site_visit" in body
-    assert "site_visit_day" in body
     assert "Saturday" in body
 
 
 @pytest.mark.asyncio
-async def test_followup_required_sends_template_2(monkeypatch, wati_settings, disable_zoho_update):
+async def test_followup_required_sends_template_2(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"follow_up_required": True, "follow_up_time": "2026-05-21T10:00:00+05:30"})
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
@@ -120,27 +132,26 @@ async def test_followup_required_sends_template_2(monkeypatch, wati_settings, di
 
 
 @pytest.mark.asyncio
-async def test_hot_lead_no_site_visit_sends_template_3(monkeypatch, wati_settings, disable_zoho_update):
+async def test_hot_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Hot"})
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert_sent_log(db, BROCHURE_TEMPLATE)
     body = route.calls.last.request.read().decode()
     assert "soil_systems_brochure" in body
-    assert "headerValue" in body
-    assert "1f49d9ce4c1242cdbc5550f67ca0d18d.pdf" in body
+    assert "https://soilsystems.in/book" in body
 
 
 @pytest.mark.asyncio
-async def test_warm_lead_no_site_visit_sends_template_3(monkeypatch, wati_settings, disable_zoho_update):
+async def test_warm_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Warm"})
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
@@ -169,13 +180,13 @@ async def test_not_interested_skips_whatsapp(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_site_visit_true_takes_priority_over_followup(monkeypatch, wati_settings, disable_zoho_update):
+async def test_site_visit_true_takes_priority_over_followup(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(
         structured={"site_visit_agreed": True, "follow_up_required": True, "site_visit_day": "Sunday"}
     )
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
@@ -194,37 +205,28 @@ async def test_invalid_phone_logs_skipped(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wati_api_failure_logs_failed(monkeypatch, wati_settings, disable_zoho_update):
+async def test_exotel_api_failure_logs_failed(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Hot"})
 
-    async def no_sleep(seconds):
-        return None
-
-    monkeypatch.setattr("app.services.whatsapp_service.asyncio.sleep", no_sleep)
-
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
+        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
             return_value=Response(500, json={"error": "down"})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert db.rows[-1].status == WhatsAppLogStatus.failed
-    assert "WATI API failed" in db.rows[-1].error_message
+    assert "Exotel API failed with status 500" in db.rows[-1].error_message
 
 
 @pytest.mark.asyncio
-async def test_wati_retry_on_failure(monkeypatch, wati_settings, disable_zoho_update):
+async def test_exotel_retry_on_failure(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Hot"})
 
-    async def no_sleep(seconds):
-        return None
-
-    monkeypatch.setattr("app.services.whatsapp_service.asyncio.sleep", no_sleep)
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
+        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
             side_effect=[
                 Response(500, json={"error": "down"}),
-                Response(200, json={"result": True}),
+                Response(200, json={"message": {"sid": "msg-123"}}),
             ]
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -243,7 +245,7 @@ def test_phone_formatted_correctly_adds_91_prefix():
 
 
 @pytest.mark.asyncio
-async def test_zoho_updated_after_whatsapp_sent(monkeypatch, wati_settings):
+async def test_zoho_updated_after_whatsapp_sent(monkeypatch, exotel_wa_settings):
     attempt = make_attempt(structured={"interest_level": "Warm"})
     captured = {}
 
@@ -252,8 +254,8 @@ async def test_zoho_updated_after_whatsapp_sent(monkeypatch, wati_settings):
 
     monkeypatch.setattr("app.services.zoho_service.update_zoho_whatsapp_status", fake_update)
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://live-test.wati.io/api/v1/sendTemplateMessage").mock(
-            return_value=Response(200, json={"result": True})
+        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 

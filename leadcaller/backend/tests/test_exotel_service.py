@@ -112,3 +112,14 @@ def test_required_setting_rejects_placeholder_values():
 
     assert exc.value.status_code == 500
     assert exc.value.detail == "EXOTEL_CALLER_ID still has a placeholder value"
+
+
+def test_format_phone_number():
+    from app.services.exotel_service import format_phone_number
+    assert format_phone_number("+919876543210") == "+919876543210"
+    assert format_phone_number("09876543210") == "+919876543210"
+    assert format_phone_number("9876543210") == "+919876543210"
+    assert format_phone_number("+91 98765-43210") == "+919876543210"
+    assert format_phone_number("+9109876543210") == "+919876543210"
+    assert format_phone_number("  98765  43210  ") == "+919876543210"
+

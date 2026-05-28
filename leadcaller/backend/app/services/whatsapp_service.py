@@ -190,24 +190,30 @@ async def send_whatsapp(
     }
     
     payload = {
-        "from": settings.EXOTEL_WA_PHONE_NUMBER,
-        "to": lead_phone if lead_phone.startswith("+") else f"+{lead_phone}",
-        "content": {
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {"code": "en"},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": val} for val in flat_params
-                        ],
-                    }
-                ],
-            },
-        },
         "custom_data": str(uuid.uuid4()),
+        "whatsapp": {
+            "messages": [
+                {
+                    "from": settings.EXOTEL_WA_PHONE_NUMBER,
+                    "to": lead_phone if lead_phone.startswith("+") else f"+{lead_phone}",
+                    "content": {
+                        "type": "template",
+                        "template": {
+                            "name": template_name,
+                            "language": {"code": "en"},
+                            "components": [
+                                {
+                                    "type": "body",
+                                    "parameters": [
+                                        {"type": "text", "text": val} for val in flat_params
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                }
+            ]
+        }
     }
     
     async with httpx.AsyncClient(timeout=15) as client:
@@ -352,13 +358,19 @@ async def send_whatsapp_custom(
         "Content-Type": "application/json",
     }
     payload = {
-        "from": settings.EXOTEL_WA_PHONE_NUMBER,
-        "to": phone if phone.startswith("+") else f"+{phone}",
-        "content": {
-            "type": "text",
-            "text": {"body": text},
-        },
         "custom_data": str(uuid.uuid4()),
+        "whatsapp": {
+            "messages": [
+                {
+                    "from": settings.EXOTEL_WA_PHONE_NUMBER,
+                    "to": phone if phone.startswith("+") else f"+{phone}",
+                    "content": {
+                        "type": "text",
+                        "text": {"body": text},
+                    }
+                }
+            ]
+        }
     }
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(url, headers=headers, json=payload)

@@ -28,7 +28,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 class CallLeadRequest(BaseModel):
-    mode: Literal["ai", "human", "exotel", "exotel_app"]
+    mode: Literal["ai", "human", "exotel", "exotel_human", "exotel_app"]
+    agent_phone: str | None = None
 
 
 class ZohoSyncResponse(BaseModel):
@@ -294,57 +295,25 @@ async def call_lead(
     """Initiate a call for a lead.
 
     mode=ai        : Retell AI agent places the phone call automatically.
-    mode=human     : Returns a Retell web-call access token so the operator
-                     can speak to the lead directly from the browser.
+    mode=human     : Bridges the phone call to the human agent's physical phone via Exotel.
     mode=exotel    : Exotel bridges the phone call through the configured ExoML app.
+    mode=exotel_human : Exotel bridges the phone call through the configured ExoML app.
     mode=exotel_app: Exotel bridges the phone call through the configured ExoML app.
     """
     lead = await db.get(Lead, lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="lead not found")
 
-    settings = get_settings()
-
     if body.mode == "ai":
         return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
 
-    if body.mode == "exotel":
+    if body.mode in {"exotel", "exotel_app"}:
         return await connect_exotel_call(lead, db)
 
-    if body.mode == "exotel_app":
-        return await connect_exotel_call(lead, db)
+    # mode == "human" or "exotel_human": Bridge the call to the human agent's phone via Exotel
+    if not body.agent_phone or body.agent_phone.strip() == "":
+        raise HTTPException(status_code=400, detail="agent_phone is required for human call bridging")
 
-    # mode == "human": create a Retell web call and return the access token
-    clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
-    web_call_body = {
-        "agent_id": settings.RETELL_AGENT_ID,
-        "retell_llm_dynamic_variables": {
-            "lead_name": clean_name,
-            "language": lead.language_preference.value,
-            "city": lead.city or "",
-            "campaign": lead.campaign or "",
-            "zoho_lead_id": lead.zoho_lead_id,
-        },
-    }
-    if settings.RETELL_AGENT_VERSION is not None:
-        web_call_body["agent_version"] = settings.RETELL_AGENT_VERSION
+    from app.services.exotel_service import connect_exotel_human_call
+    return await connect_exotel_human_call(lead, body.agent_phone.strip(), db)
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                "https://api.retellai.com/v2/create-web-call",
-                headers={"Authorization": f"Bearer {settings.RETELL_API_KEY}"},
-                json=web_call_body,
-            )
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Retell web call creation failed: {exc}")
-
-    return {
-        "mode": "human",
-        "access_token": data.get("access_token"),
-        "call_id": data.get("call_id"),
-        "lead_name": lead.name,
-        "phone": lead.phone,
-    }

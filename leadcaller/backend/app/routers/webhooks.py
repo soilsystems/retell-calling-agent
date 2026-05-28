@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -140,6 +140,65 @@ async def exotel_status(request: Request) -> JSONResponse:
 
     logger.info("Exotel status callback received: %s", payload)
     return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@router.post("/exotel/bridge")
+async def exotel_bridge(
+    request: Request,
+) -> Response:
+    """ExoML endpoint for agent-first human bridge calls.
+
+    Exotel calls the agent first (Leg1) using Connect-to-Flow.
+    When the agent picks up, Exotel POSTs to this URL and we return ExoML
+    that Dials the lead (Leg2) — bridging both with full bidirectional audio.
+
+    Exotel sends call metadata as form-data; we read lead_phone and caller_id
+    from query params that we embedded in the URL when initiating the call.
+
+    Query params (embedded in Url at call initiation):
+        lead_phone   - E.164 phone number of the lead to dial.
+        caller_id    - ExoPhone number to show on the lead's screen.
+    """
+    lead_phone = request.query_params.get("lead_phone", "")
+    caller_id = request.query_params.get("caller_id", "")
+
+    # Defensive fallback: check form data if not found in query parameters
+    if not lead_phone or not caller_id:
+        try:
+            form = await request.form()
+            custom_field = form.get("CustomField", "")
+            
+            # If CustomField contains JSON, parse it
+            if custom_field.startswith("{"):
+                import json
+                try:
+                    custom_data = json.loads(custom_field)
+                    lead_phone = lead_phone or custom_data.get("lead_phone", "")
+                    caller_id = caller_id or custom_data.get("caller_id", "")
+                except json.JSONDecodeError:
+                    pass
+            
+            if not lead_phone:
+                lead_phone = form.get("lead_phone", "") or custom_field
+            if not caller_id:
+                caller_id = form.get("caller_id", "") or form.get("CallerId", "")
+        except Exception as e:
+            logger.debug("Failed to parse form data in exotel_bridge fallback: %s", e)
+
+    if not lead_phone:
+        logger.warning("ExoML bridge called without lead_phone")
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response><Hangup/></Response>"""
+        return Response(content=xml, media_type="application/xml")
+
+    logger.info("ExoML bridge: dialing lead=%s via caller_id=%s", lead_phone, caller_id)
+
+    caller_id_attr = f' callerId="{caller_id}"' if caller_id else ""
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial{caller_id_attr}>{lead_phone}</Dial>
+</Response>"""
+    return Response(content=xml, media_type="application/xml")
 
 
 @router.post("/retell/inbound")

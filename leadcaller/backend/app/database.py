@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator
 
+import uuid
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -13,10 +15,11 @@ class Base(DeclarativeBase):
 settings = get_settings()
 engine = create_async_engine(
     str(settings.DATABASE_URL),
-    pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=5,
-    pool_timeout=30,
+    poolclass=NullPool,
+    connect_args={
+        "statement_cache_size": 0,
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
+    }
 )
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,

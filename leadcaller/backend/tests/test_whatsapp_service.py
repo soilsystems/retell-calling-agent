@@ -63,7 +63,7 @@ def exotel_wa_settings(monkeypatch):
         EXOTEL_WA_ACCOUNT_SID="test-account-sid",
         EXOTEL_WA_API_KEY="test-api-key",
         EXOTEL_WA_API_TOKEN="test-api-token",
-        EXOTEL_WA_PHONE_NUMBER="+918046376848",
+        EXOTEL_WA_PHONE_NUMBER="+918047283246",
         BOOKING_LINK="https://soilsystems.in/book",
         EXOTEL_WA_TEMPLATE_COMPLETED="call_followup",
         EXOTEL_WA_TEMPLATE_MISSED="call_missed",
@@ -260,3 +260,24 @@ async def test_zoho_updated_after_whatsapp_sent(monkeypatch, exotel_wa_settings)
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert captured["log_id"] == db.rows[-1].id
+
+
+@pytest.mark.asyncio
+async def test_exotel_payload_structure(monkeypatch, exotel_wa_settings, disable_zoho_update):
+    import json
+    attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
+        )
+        await run_for_attempt(monkeypatch, attempt)
+
+    request_payload = json.loads(route.calls.last.request.read().decode())
+    assert "from" in request_payload
+    assert request_payload["from"] == "+918047283246"
+    assert request_payload["to"] == "+919876543210"
+    assert "content" in request_payload
+    assert request_payload["content"]["type"] == "template"
+    assert request_payload["content"]["template"]["name"] == "soil_systems_site_visit"
+    assert request_payload["content"]["template"]["language"]["policy"] == "deterministic"
+

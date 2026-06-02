@@ -30,6 +30,7 @@ class RetellCallCompletedWebhook(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     structured_data: RetellStructuredData | dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -56,6 +57,7 @@ class RetellCallCompletedWebhook(BaseModel):
             "started_at": _datetime_from_retell(call.get("start_timestamp")),
             "ended_at": _datetime_from_retell(call.get("end_timestamp")),
             "structured_data": structured_data,
+            "metadata": call.get("metadata"),
         }
 
 

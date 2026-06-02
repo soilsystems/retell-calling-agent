@@ -6,7 +6,9 @@ export default defineConfig({
   server: {
     proxy: {
       "/admin": "http://127.0.0.1:8000",
-      "/health": "http://127.0.0.1:8000"
+      "/health": "http://127.0.0.1:8000",
+      "/whatsapp": "http://127.0.0.1:8000",
+      "/webhooks": "http://127.0.0.1:8000"
     }
   }
 });

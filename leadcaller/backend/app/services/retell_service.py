@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import CallAttempt, CallAttemptStatus, CallJob, CallJobStatus, WebhookEvent, WebhookSource
+from app.models import CallAttempt, CallAttemptStatus, CallJob, CallJobStatus, WebhookEvent, WebhookSource, Lead
 from app.schemas.retell_schema import RetellCallCompletedWebhook, RetellStructuredData
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,59 @@ async def process_retell_completion(
     )
     attempt = result.scalar_one_or_none()
     if not attempt:
-        logger.warning("No call_attempt found for retell_call_id=%s", payload.call_id)
+        # Try to find the lead ID in metadata to create the attempt dynamically
+        lead_id_str = (payload.metadata or {}).get("lead_id") if payload.metadata else None
+        if lead_id_str:
+            try:
+                lead_id = uuid.UUID(lead_id_str)
+                # Ensure the lead exists
+                lead = await db.get(Lead, lead_id)
+                if lead:
+                    # Find or create a CallJob for this lead
+                    job_result = await db.execute(
+                        select(CallJob)
+                        .where(CallJob.lead_id == lead.id)
+                        .order_by(CallJob.created_at.desc())
+                        .limit(1)
+                    )
+                    call_job = job_result.scalar_one_or_none()
+                    if not call_job:
+                        call_job = CallJob(
+                            lead_id=lead.id,
+                            status=CallJobStatus.in_progress,
+                            scheduled_at=payload.started_at or _utcnow(),
+                            retry_count=0,
+                            max_retries=3,
+                        )
+                        db.add(call_job)
+                        await db.commit()
+                        await db.refresh(call_job)
+
+                    # Create the CallAttempt dynamically
+                    attempt_count = await db.scalar(
+                        select(func.count(CallAttempt.id)).where(CallAttempt.call_job_id == call_job.id)
+                    )
+                    attempt = CallAttempt(
+                        call_job_id=call_job.id,
+                        retell_call_id=payload.call_id,
+                        attempt_number=int(attempt_count or 0) + 1,
+                        status=CallAttemptStatus.initiated,
+                        started_at=payload.started_at or _utcnow(),
+                    )
+                    db.add(attempt)
+                    await db.commit()
+                    # Re-load with call_job relationship populated
+                    result = await db.execute(
+                        select(CallAttempt)
+                        .options(selectinload(CallAttempt.call_job))
+                        .where(CallAttempt.id == attempt.id)
+                    )
+                    attempt = result.scalar_one()
+            except (ValueError, AttributeError) as exc:
+                logger.warning("Failed to parse metadata lead_id for inbound call: %s", exc)
+
+    if not attempt:
+        logger.warning("No call_attempt found and could not create one dynamically for retell_call_id=%s", payload.call_id)
         webhook_event.processed = True
         await db.commit()
         return None

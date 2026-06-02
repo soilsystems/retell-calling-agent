@@ -203,3 +203,120 @@ async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
     assert variables["customer_name"] == "Ravi Chandra"
     assert variables["phone"] == "+918746905010"
     assert "Ravi Chandra" in body["call_inbound"]["agent_override"]["retell_llm"]["begin_message"]
+
+
+@pytest.mark.asyncio
+async def test_process_retell_completion_creates_attempt_dynamically():
+    import uuid
+    from app.services.retell_service import process_retell_completion
+    from app.schemas.retell_schema import RetellCallCompletedWebhook
+    from app.models import Lead, CallJob, CallAttempt, CallJobStatus, CallAttemptStatus, WebhookEvent, WebhookSource
+    
+    lead_id = uuid.uuid4()
+    lead = Lead(
+        id=lead_id,
+        zoho_lead_id="zoho-lead-123",
+        name="Ravi Chandra",
+        phone="+918746905010"
+    )
+    
+    webhook_event = WebhookEvent(
+        source=WebhookSource.retell,
+        event_type="call_completed",
+        payload={},
+        processed=False
+    )
+    
+    payload_data = {
+        "call_id": "call_inbound_dynamic_test",
+        "call_status": "completed",
+        "transcript": "Hello, how can I help you?",
+        "summary": "Successful call",
+        "recording_url": "http://example.com/recording.mp3",
+        "duration_ms": 60000,
+        "start_timestamp": 1778742000000,
+        "end_timestamp": 1778742060000,
+        "call_analysis": {
+            "call_summary": "Successful call",
+            "custom_analysis_data": {
+                "interest_level": "Hot",
+                "follow_up_required": True,
+                "follow_up_time": "2026-05-15T10:00:00+05:30",
+            }
+        },
+        "metadata": {
+            "lead_id": str(lead_id)
+        }
+    }
+    
+    # Flatten the raw payload through model_validator of RetellCallCompletedWebhook
+    payload = RetellCallCompletedWebhook.model_validate({"call": payload_data})
+    
+    # Mock DB
+    class MockResult:
+        def __init__(self, value):
+            self.value = value
+        def scalar_one_or_none(self):
+            return self.value
+        def scalar_one(self):
+            return self.value
+
+    class MockDb:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+            self.refreshes = 0
+            self.execute_calls = 0
+
+        async def execute(self, stmt):
+            self.execute_calls += 1
+            # First execute is checking CallAttempt existence
+            if self.execute_calls == 1:
+                return MockResult(None)
+            # Second execute is looking up CallJob
+            elif self.execute_calls == 2:
+                return MockResult(None)
+            # Third execute is re-loading the created CallAttempt
+            else:
+                # Find the added CallAttempt in self.added
+                attempt = [x for x in self.added if isinstance(x, CallAttempt)][0]
+                # Ensure it has a mock CallJob associated with it for the test
+                for x in self.added:
+                    if isinstance(x, CallJob):
+                        attempt.call_job = x
+                return MockResult(attempt)
+
+        async def get(self, model, id_):
+            if model == Lead and id_ == lead_id:
+                return lead
+            return None
+
+        async def scalar(self, stmt):
+            # Checking attempt count for CallJob
+            return 0
+
+        def add(self, item):
+            self.added.append(item)
+
+        async def commit(self):
+            self.commits += 1
+
+        async def refresh(self, item):
+            self.refreshes += 1
+
+    db = MockDb()
+    attempt = await process_retell_completion(payload, webhook_event, db)
+    
+    assert attempt is not None
+    assert attempt.retell_call_id == "call_inbound_dynamic_test"
+    assert attempt.status == CallAttemptStatus.completed
+    assert attempt.transcript == "Hello, how can I help you?"
+    assert attempt.summary == "Successful call"
+    
+    # Ensure CallJob and CallAttempt were both added to DB
+    jobs = [x for x in db.added if isinstance(x, CallJob)]
+    attempts = [x for x in db.added if isinstance(x, CallAttempt)]
+    assert len(jobs) == 1
+    assert len(attempts) == 1
+    assert jobs[0].lead_id == lead_id
+    assert attempts[0].call_job_id == jobs[0].id

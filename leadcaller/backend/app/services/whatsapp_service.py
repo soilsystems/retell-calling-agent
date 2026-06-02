@@ -81,6 +81,7 @@ def _as_bool(value: Any) -> bool:
 
 
 def build_whatsapp_plan(lead_name: str, structured: dict[str, Any]) -> WhatsAppPlan:
+    settings = get_settings()
     name_param = {"name": "lead_name", "value": lead_name}
     site_visit_agreed = _as_bool(structured.get("site_visit_agreed"))
     follow_up_required = _as_bool(structured.get("follow_up_required"))
@@ -108,19 +109,12 @@ def build_whatsapp_plan(lead_name: str, structured: dict[str, Any]) -> WhatsAppP
             attach_brochure=True,
         )
 
-    if interest_level in {"Cold", "Not Interested"}:
-        return WhatsAppPlan(
-            template_name=None,
-            parameters=[],
-            status=WhatsAppLogStatus.skipped,
-            reason=f"interest_level={interest_level}",
-        )
-
+    # Always send a post-call follow-up message regardless of interest level or outcome.
+    # This is the default fallback — every completed call should notify the customer.
     return WhatsAppPlan(
-        template_name=None,
-        parameters=[],
-        status=WhatsAppLogStatus.skipped,
-        reason="no whatsapp condition matched",
+        template_name=settings.EXOTEL_WA_TEMPLATE_COMPLETED,
+        parameters=[name_param],
+        status=WhatsAppLogStatus.sent,
     )
 
 
@@ -167,55 +161,71 @@ async def send_whatsapp(
     *,
     attach_brochure: bool = False,
 ) -> dict[str, Any]:
-    import base64
     settings = get_settings()
-    
-    # Exotel WhatsApp endpoint
-    url = (
-        f"https://{settings.EXOTEL_WA_SUBDOMAIN}"
-        f"/v2/accounts/{settings.EXOTEL_WA_ACCOUNT_SID}/messages"
-    )
-    
+
     # Convert WATI-like parameter format to flat list of strings for Exotel
     flat_params = [p["value"] for p in parameters]
     if attach_brochure:
         flat_params.append(settings.BOOKING_LINK)
-    
-    # Base64 Basic Auth
-    raw = f"{settings.EXOTEL_WA_API_KEY}:{settings.EXOTEL_WA_API_TOKEN}"
-    b64 = base64.b64encode(raw.encode()).decode()
-    headers = {
-        "Authorization": f"Basic {b64}",
-        "Content-Type": "application/json",
-    }
-    
+
+    # Exotel WhatsApp v1 endpoint — credentials embedded in URL (per Exotel docs).
+    # The v2/messages endpoint is a multichannel API that requires a "channel" field;
+    # the v1/Accounts/Messages endpoint is the dedicated WhatsApp API.
+    api_key = settings.EXOTEL_WA_API_KEY or ""
+    api_token = settings.EXOTEL_WA_API_TOKEN or ""
+    subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
+    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
+    url = f"https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Messages"
+
+    headers = {"Content-Type": "application/json"}
+
+    # Format phone numbers to E.164 format with + prefix
+    from_raw = settings.EXOTEL_WA_PHONE_NUMBER or ""
+    from_digits = "".join(c for c in from_raw if c.isdigit())
+    if len(from_digits) == 10:
+        from_number = f"+91{from_digits}"
+    elif len(from_digits) == 12 and from_digits.startswith("91"):
+        from_number = f"+{from_digits}"
+    else:
+        from_number = from_raw if from_raw.startswith("+") else f"+{from_raw}"
+
+    to_digits = "".join(c for c in lead_phone if c.isdigit())
+    if len(to_digits) == 10:
+        to_number = f"+91{to_digits}"
+    elif len(to_digits) == 12 and to_digits.startswith("91"):
+        to_number = f"+{to_digits}"
+    else:
+        to_number = lead_phone if lead_phone.startswith("+") else f"+{lead_phone}"
+
     payload = {
-        "custom_data": str(uuid.uuid4()),
-        "whatsapp": {
-            "messages": [
-                {
-                    "from": settings.EXOTEL_WA_PHONE_NUMBER,
-                    "to": lead_phone if lead_phone.startswith("+") else f"+{lead_phone}",
-                    "content": {
-                        "type": "template",
-                        "template": {
-                            "name": template_name,
-                            "language": {"code": "en"},
-                            "components": [
-                                {
-                                    "type": "body",
-                                    "parameters": [
-                                        {"type": "text", "text": val} for val in flat_params
-                                    ],
-                                }
-                            ],
-                        },
+        "from": from_number,
+        "to": to_number,
+        "content": {
+            "recipient_type": "individual",
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {
+                    "code": "en",
+                    "policy": "deterministic",
+                },
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": val} for val in flat_params
+                        ],
                     }
-                }
-            ]
-        }
+                ],
+            },
+        },
     }
-    
+
+    logger.info(
+        "Sending WhatsApp via Exotel v1: to=%s template=%s params=%s",
+        to_number, template_name, flat_params,
+    )
+
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(url, headers=headers, json=payload)
 
@@ -224,6 +234,8 @@ async def send_whatsapp(
         response_payload = response.json()
     except ValueError:
         response_payload = {"text": response.text}
+
+    logger.info("Exotel WhatsApp response: status=%s body=%s", response.status_code, response_payload)
 
     if response.status_code >= 400:
         raise RuntimeError(f"Exotel API failed with status {response.status_code}: {response_payload}")
@@ -345,31 +357,40 @@ async def send_whatsapp_custom(
     text: str,
 ) -> dict[str, Any] | None:
     """Send custom free-text WhatsApp message."""
-    import base64
     settings = get_settings()
-    url = (
-        f"https://{settings.EXOTEL_WA_SUBDOMAIN}"
-        f"/v2/accounts/{settings.EXOTEL_WA_ACCOUNT_SID}/messages"
-    )
-    raw = f"{settings.EXOTEL_WA_API_KEY}:{settings.EXOTEL_WA_API_TOKEN}"
-    b64 = base64.b64encode(raw.encode()).decode()
-    headers = {
-        "Authorization": f"Basic {b64}",
-        "Content-Type": "application/json",
-    }
+    api_key = settings.EXOTEL_WA_API_KEY or ""
+    api_token = settings.EXOTEL_WA_API_TOKEN or ""
+    subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
+    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
+    url = f"https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Messages"
+    headers = {"Content-Type": "application/json"}
+    # Format phone numbers to E.164 format with + prefix
+    from_raw = settings.EXOTEL_WA_PHONE_NUMBER or ""
+    from_digits = "".join(c for c in from_raw if c.isdigit())
+    if len(from_digits) == 10:
+        from_number = f"+91{from_digits}"
+    elif len(from_digits) == 12 and from_digits.startswith("91"):
+        from_number = f"+{from_digits}"
+    else:
+        from_number = from_raw if from_raw.startswith("+") else f"+{from_raw}"
+
+    to_digits = "".join(c for c in phone if c.isdigit())
+    if len(to_digits) == 10:
+        to_number = f"+91{to_digits}"
+    elif len(to_digits) == 12 and to_digits.startswith("91"):
+        to_number = f"+{to_digits}"
+    else:
+        to_number = phone if phone.startswith("+") else f"+{phone}"
+
     payload = {
-        "custom_data": str(uuid.uuid4()),
-        "whatsapp": {
-            "messages": [
-                {
-                    "from": settings.EXOTEL_WA_PHONE_NUMBER,
-                    "to": phone if phone.startswith("+") else f"+{phone}",
-                    "content": {
-                        "type": "text",
-                        "text": {"body": text},
-                    }
-                }
-            ]
+        "from": from_number,
+        "to": to_number,
+        "content": {
+            "recipient_type": "individual",
+            "type": "text",
+            "text": {
+                "body": text
+            }
         }
     }
     async with httpx.AsyncClient(timeout=15) as client:

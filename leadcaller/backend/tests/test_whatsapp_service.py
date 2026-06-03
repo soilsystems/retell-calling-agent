@@ -108,7 +108,7 @@ def assert_sent_log(db, template_name):
 async def test_site_visit_agreed_sends_template_1(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -123,7 +123,7 @@ async def test_site_visit_agreed_sends_template_1(monkeypatch, exotel_wa_setting
 async def test_followup_required_sends_template_2(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"follow_up_required": True, "follow_up_time": "2026-05-21T10:00:00+05:30"})
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -135,14 +135,14 @@ async def test_followup_required_sends_template_2(monkeypatch, exotel_wa_setting
 async def test_hot_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Hot"})
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert_sent_log(db, BROCHURE_TEMPLATE)
     body = route.calls.last.request.read().decode()
-    assert "soil_systems_brochure" in body
+    assert "soil_systems" in body
     assert "https://soilsystems.in/book" in body
 
 
@@ -150,7 +150,7 @@ async def test_hot_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_se
 async def test_warm_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Warm"})
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -159,24 +159,27 @@ async def test_warm_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_s
 
 
 @pytest.mark.asyncio
-async def test_cold_lead_skips_whatsapp(monkeypatch):
+async def test_cold_lead_skips_whatsapp(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Cold"})
-    db = await run_for_attempt(monkeypatch, attempt)
+    with respx.mock(assert_all_called=True) as router:
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
+        )
+        db = await run_for_attempt(monkeypatch, attempt)
 
-    log = db.rows[-1]
-    assert log.status == WhatsAppLogStatus.skipped
-    assert log.template_name is None
-    assert log.error_message == "interest_level=Cold"
+    assert_sent_log(db, "call_followup")
 
 
 @pytest.mark.asyncio
-async def test_not_interested_skips_whatsapp(monkeypatch):
+async def test_not_interested_skips_whatsapp(monkeypatch, exotel_wa_settings, disable_zoho_update):
     attempt = make_attempt(structured={"interest_level": "Not Interested"})
-    db = await run_for_attempt(monkeypatch, attempt)
+    with respx.mock(assert_all_called=True) as router:
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
+            return_value=Response(200, json={"message": {"sid": "msg-123"}})
+        )
+        db = await run_for_attempt(monkeypatch, attempt)
 
-    log = db.rows[-1]
-    assert log.status == WhatsAppLogStatus.skipped
-    assert log.error_message == "interest_level=Not Interested"
+    assert_sent_log(db, "call_followup")
 
 
 @pytest.mark.asyncio
@@ -185,7 +188,7 @@ async def test_site_visit_true_takes_priority_over_followup(monkeypatch, exotel_
         structured={"site_visit_agreed": True, "follow_up_required": True, "site_visit_day": "Sunday"}
     )
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -209,7 +212,7 @@ async def test_exotel_api_failure_logs_failed(monkeypatch, exotel_wa_settings, d
     attempt = make_attempt(structured={"interest_level": "Hot"})
 
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(500, json={"error": "down"})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -223,7 +226,7 @@ async def test_exotel_retry_on_failure(monkeypatch, exotel_wa_settings, disable_
     attempt = make_attempt(structured={"interest_level": "Hot"})
 
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             side_effect=[
                 Response(500, json={"error": "down"}),
                 Response(200, json={"message": {"sid": "msg-123"}}),
@@ -254,7 +257,7 @@ async def test_zoho_updated_after_whatsapp_sent(monkeypatch, exotel_wa_settings)
 
     monkeypatch.setattr("app.services.zoho_service.update_zoho_whatsapp_status", fake_update)
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         db = await run_for_attempt(monkeypatch, attempt)
@@ -267,7 +270,7 @@ async def test_exotel_payload_structure(monkeypatch, exotel_wa_settings, disable
     import json
     attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post("https://api.in.exotel.com/v1/Accounts/test-account-sid/Messages").mock(
             return_value=Response(200, json={"message": {"sid": "msg-123"}})
         )
         await run_for_attempt(monkeypatch, attempt)

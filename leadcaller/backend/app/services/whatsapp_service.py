@@ -21,7 +21,7 @@ BROCHURE_URL = "https://www.soilsystems.in/_files/ugd/6c151e_1f49d9ce4c1242cdbc5
 
 SITE_VISIT_TEMPLATE = "soil_systems_site_visit"
 FOLLOWUP_TEMPLATE = "soil_systems_followup"
-BROCHURE_TEMPLATE = "soil_systems_brochure"
+BROCHURE_TEMPLATE = "soil_systems"
 
 
 @dataclass(frozen=True)
@@ -165,8 +165,33 @@ async def send_whatsapp(
 
     # Convert WATI-like parameter format to flat list of strings for Exotel
     flat_params = [p["value"] for p in parameters]
+    
+    components = []
+    
+    # If attach_brochure is True, we add the header document component
     if attach_brochure:
+        components.append({
+            "type": "header",
+            "parameters": [
+                {
+                    "type": "document",
+                    "document": {
+                        "link": BROCHURE_URL,
+                        "filename": "Woods-and-Spices.pdf"
+                    }
+                }
+            ]
+        })
         flat_params.append(settings.BOOKING_LINK)
+        
+    # Add body parameters component
+    if flat_params:
+        components.append({
+            "type": "body",
+            "parameters": [
+                {"type": "text", "text": val} for val in flat_params
+            ]
+        })
 
     # Exotel WhatsApp v1 endpoint — credentials embedded in URL (per Exotel docs).
     # The v2/messages endpoint is a multichannel API that requires a "channel" field;
@@ -209,16 +234,10 @@ async def send_whatsapp(
                     "code": "en",
                     "policy": "deterministic",
                 },
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": val} for val in flat_params
-                        ],
-                    }
-                ],
+                "components": components,
             },
         },
+        "custom_data": str(uuid.uuid4()),
     }
 
     logger.info(

@@ -193,14 +193,12 @@ async def send_whatsapp(
             ]
         })
 
-    # Exotel WhatsApp v1 endpoint — credentials embedded in URL (per Exotel docs).
-    # The v2/messages endpoint is a multichannel API that requires a "channel" field;
-    # the v1/Accounts/Messages endpoint is the dedicated WhatsApp API.
+    # Exotel WhatsApp v2 endpoint and payload structure.
     api_key = settings.EXOTEL_WA_API_KEY or ""
     api_token = settings.EXOTEL_WA_API_TOKEN or ""
     subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
     account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
-    url = f"https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Messages"
+    url = f"https://{subdomain}/v2/accounts/{account_sid}/messages"
 
     headers = {"Content-Type": "application/json"}
 
@@ -223,29 +221,35 @@ async def send_whatsapp(
         to_number = lead_phone if lead_phone.startswith("+") else f"+{lead_phone}"
 
     payload = {
-        "from": from_number,
-        "to": to_number,
-        "content": {
-            "recipient_type": "individual",
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {
-                    "code": "en",
-                    "policy": "deterministic",
-                },
-                "components": components,
-            },
-        },
         "custom_data": str(uuid.uuid4()),
+        "whatsapp": {
+            "messages": [
+                {
+                    "from": from_number,
+                    "to": to_number,
+                    "content": {
+                        "recipient_type": "individual",
+                        "type": "template",
+                        "template": {
+                            "name": template_name,
+                            "language": {
+                                "code": "en",
+                                "policy": "deterministic",
+                            },
+                            "components": components,
+                        },
+                    },
+                }
+            ]
+        }
     }
 
     logger.info(
-        "Sending WhatsApp via Exotel v1: to=%s template=%s params=%s",
+        "Sending WhatsApp via Exotel v2: to=%s template=%s params=%s",
         to_number, template_name, flat_params,
     )
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(auth=(api_key, api_token), timeout=15) as client:
         response = await client.post(url, headers=headers, json=payload)
 
     response_payload: dict[str, Any]
@@ -381,7 +385,7 @@ async def send_whatsapp_custom(
     api_token = settings.EXOTEL_WA_API_TOKEN or ""
     subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
     account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
-    url = f"https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Messages"
+    url = f"https://{subdomain}/v2/accounts/{account_sid}/messages"
     headers = {"Content-Type": "application/json"}
     # Format phone numbers to E.164 format with + prefix
     from_raw = settings.EXOTEL_WA_PHONE_NUMBER or ""
@@ -402,17 +406,24 @@ async def send_whatsapp_custom(
         to_number = phone if phone.startswith("+") else f"+{phone}"
 
     payload = {
-        "from": from_number,
-        "to": to_number,
-        "content": {
-            "recipient_type": "individual",
-            "type": "text",
-            "text": {
-                "body": text
-            }
+        "custom_data": str(uuid.uuid4()),
+        "whatsapp": {
+            "messages": [
+                {
+                    "from": from_number,
+                    "to": to_number,
+                    "content": {
+                        "recipient_type": "individual",
+                        "type": "text",
+                        "text": {
+                            "body": text
+                        }
+                    }
+                }
+            ]
         }
     }
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(auth=(api_key, api_token), timeout=15) as client:
         response = await client.post(url, headers=headers, json=payload)
     return response.json()
 

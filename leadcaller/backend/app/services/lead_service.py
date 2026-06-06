@@ -67,7 +67,12 @@ async def schedule_call_for_lead(
         return "call already scheduled", existing_job
 
     scheduled_at = now if is_business_hours(now) else next_business_slot(now)
-    call_job = CallJob(lead_id=lead.id, status=CallJobStatus.pending, scheduled_at=scheduled_at)
+    call_job = CallJob(
+        lead_id=lead.id,
+        status=CallJobStatus.pending,
+        scheduled_at=scheduled_at,
+        trigger_reason="new_lead",
+    )
     db.add(call_job)
     webhook_event.processed = True
     await db.commit()

@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -203,6 +204,61 @@ async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
     assert variables["customer_name"] == "Ravi Chandra"
     assert variables["phone"] == "+918746905010"
     assert "Ravi Chandra" in body["call_inbound"]["agent_override"]["retell_llm"]["begin_message"]
+
+
+@pytest.mark.asyncio
+async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
+    lead = Lead(
+        id=uuid4(),
+        zoho_lead_id="zoho-1",
+        name="Ravi Chandra",
+        phone="+918746905010",
+        city="Bengaluru",
+        campaign="May Campaign",
+        language_preference=LanguagePreference.english,
+    )
+    attempt_id = uuid4()
+    captured = {}
+
+    class Db:
+        pass
+
+    async def fake_get_db():
+        yield Db()
+
+    async def fake_find_lead(payload, db):
+        captured["payload"] = payload
+        return lead
+
+    async def fake_ensure_attempt(found_lead, payload, db):
+        assert found_lead is lead
+        return SimpleNamespace(id=attempt_id)
+
+    async def fake_send_whatsapp(call_attempt_id):
+        captured["call_attempt_id"] = call_attempt_id
+
+    from app.database import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = fake_get_db
+    monkeypatch.setattr("app.routers.webhooks._find_lead_for_exotel_status", fake_find_lead)
+    monkeypatch.setattr("app.routers.webhooks._ensure_exotel_call_attempt", fake_ensure_attempt)
+    monkeypatch.setattr("app.routers.webhooks.send_whatsapp_for_call", fake_send_whatsapp)
+
+    response = await client.post(
+        "/webhooks/exotel/status",
+        data={
+            "CallStatus": "completed",
+            "CallSid": "exotel-call-1",
+            "CustomField": json.dumps({"lead_id": str(lead.id), "lead_phone": lead.phone}),
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["whatsapp"] == "queued"
+    assert response.json()["call_attempt_id"] == str(attempt_id)
+    assert captured["call_attempt_id"] == attempt_id
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,11 @@ class CallAttemptStatus(StrEnum):
     completed = "completed"
 
 
+class CallDirection(StrEnum):
+    inbound = "inbound"
+    outbound = "outbound"
+
+
 class WebhookSource(StrEnum):
     zoho = "zoho"
     retell = "retell"

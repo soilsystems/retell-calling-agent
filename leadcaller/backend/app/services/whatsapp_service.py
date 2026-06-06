@@ -1,7 +1,7 @@
 import asyncio
+import json
 import logging
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,106 +16,102 @@ from app.models import CallAttempt, CallJob, Lead, WhatsAppLog, WhatsAppLogStatu
 
 logger = logging.getLogger(__name__)
 
-BROADCAST_NAME = "leadcaller_broadcast"
-BROCHURE_URL = "https://www.soilsystems.in/_files/ugd/6c151e_1f49d9ce4c1242cdbc5550f67ca0d18d.pdf"
-
-SITE_VISIT_TEMPLATE = "soil_systems_site_visit"
-FOLLOWUP_TEMPLATE = "soil_systems_followup"
-BROCHURE_TEMPLATE = "soil_systems"
-
-
-@dataclass(frozen=True)
-class WhatsAppPlan:
-    template_name: str | None
-    parameters: list[dict[str, str]]
-    status: WhatsAppLogStatus
-    reason: str | None = None
-    attach_brochure: bool = False
+SOIL_SYSTEMS_TEMPLATE = "soil_systems"
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def format_wati_phone(phone: str | None) -> str | None:
-    if not phone:
-        return None
-    digits = "".join(char for char in phone if char.isdigit())
-    if len(digits) == 10 and digits[0] in "6789":
-        return f"91{digits}"
-    if len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
-        return digits
-    return None
-
-
 def _clean_name(name: str) -> str:
     return name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip() or name.strip()
 
 
-def _friendly_datetime(value: Any) -> str:
-    if value is None:
-        return "the scheduled time"
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
-    return str(value)
+def format_phone_for_exotel_whatsapp(phone: str | None) -> str | None:
+    if not phone:
+        return None
+    digits = "".join(char for char in phone if char.isdigit())
+    if len(digits) == 10:
+        return f"+91{digits}"
+    if len(digits) == 11 and digits.startswith("0"):
+        return f"+91{digits[1:]}"
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    return phone.strip() if phone.strip().startswith("+") else None
 
 
-def _site_visit_day(structured: dict[str, Any]) -> str:
-    value = structured.get("site_visit_day") or structured.get("site_visit_time") or structured.get("follow_up_time")
-    if isinstance(value, datetime):
-        return value.strftime("%A")
-    if isinstance(value, str) and value:
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%A")
-        except ValueError:
-            return value
-    return "the scheduled day"
+def format_wati_phone(phone: str | None) -> str | None:
+    formatted = format_phone_for_exotel_whatsapp(phone)
+    return formatted.replace("+", "") if formatted else None
 
 
-def _as_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "1"}
-    return bool(value)
-
-
-def build_whatsapp_plan(lead_name: str, structured: dict[str, Any]) -> WhatsAppPlan:
+def _whatsapp_from_number() -> str | None:
     settings = get_settings()
-    name_param = {"name": "lead_name", "value": lead_name}
-    site_visit_agreed = _as_bool(structured.get("site_visit_agreed"))
-    follow_up_required = _as_bool(structured.get("follow_up_required"))
-    interest_level = str(structured.get("interest_level") or "").strip()
-
-    if site_visit_agreed:
-        return WhatsAppPlan(
-            template_name=SITE_VISIT_TEMPLATE,
-            parameters=[name_param, {"name": "site_visit_day", "value": _site_visit_day(structured)}],
-            status=WhatsAppLogStatus.sent,
-        )
-
-    if follow_up_required:
-        return WhatsAppPlan(
-            template_name=FOLLOWUP_TEMPLATE,
-            parameters=[name_param, {"name": "follow_up_time", "value": _friendly_datetime(structured.get("follow_up_time"))}],
-            status=WhatsAppLogStatus.sent,
-        )
-
-    if interest_level in {"Hot", "Warm"}:
-        return WhatsAppPlan(
-            template_name=BROCHURE_TEMPLATE,
-            parameters=[name_param],
-            status=WhatsAppLogStatus.sent,
-            attach_brochure=True,
-        )
-
-    # Always send a post-call follow-up message regardless of interest level or outcome.
-    # This is the default fallback — every completed call should notify the customer.
-    return WhatsAppPlan(
-        template_name=settings.EXOTEL_WA_TEMPLATE_COMPLETED,
-        parameters=[name_param],
-        status=WhatsAppLogStatus.sent,
+    raw = (
+        settings.EXOTEL_WHATSAPP_FROM_NUMBER
+        or settings.EXOTEL_WHATSAPP_NUMBER
+        or settings.EXOTEL_WA_PHONE_NUMBER
     )
+    return format_phone_for_exotel_whatsapp(raw)
+
+
+def _whatsapp_credentials() -> tuple[str, str, str, str]:
+    settings = get_settings()
+    api_key = settings.EXOTEL_WA_API_KEY or settings.EXOTEL_API_KEY or ""
+    api_token = settings.EXOTEL_WA_API_TOKEN or settings.EXOTEL_API_TOKEN or ""
+    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or settings.EXOTEL_ACCOUNT_SID or ""
+    subdomain = settings.EXOTEL_WA_SUBDOMAIN or settings.EXOTEL_SUBDOMAIN or "api.in.exotel.com"
+    return api_key, api_token, account_sid, subdomain
+
+
+def _whatsapp_url() -> str:
+    _, _, account_sid, subdomain = _whatsapp_credentials()
+    return f"https://{subdomain}/v2/accounts/{account_sid}/messages"
+
+
+def _template_name() -> str:
+    settings = get_settings()
+    return settings.EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS or SOIL_SYSTEMS_TEMPLATE
+
+
+def build_exotel_template_payload(
+    *,
+    from_number: str,
+    to_number: str,
+    template_name: str,
+    parameters: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    components: list[dict[str, Any]] = []
+    if parameters:
+        components.append(
+            {
+                "type": "body",
+                "parameters": parameters,
+            }
+        )
+
+    message = {
+        "from": from_number,
+        "to": to_number,
+        "content": {
+            "recipient_type": "individual",
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {
+                    "code": "en",
+                    "policy": "deterministic",
+                },
+                "components": components,
+            },
+        },
+    }
+    return {
+        "custom_data": str(uuid.uuid4()),
+        "whatsapp": {
+            "messages": [message],
+        },
+    }
 
 
 async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAttempt | None:
@@ -127,7 +123,7 @@ async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAtt
     return result.scalar_one_or_none()
 
 
-async def _log_whatsapp(
+async def log_whatsapp(
     db: AsyncSession,
     *,
     lead_id: uuid.UUID,
@@ -135,7 +131,7 @@ async def _log_whatsapp(
     phone: str | None,
     template_name: str | None,
     status: WhatsAppLogStatus,
-    wati_response: dict[str, Any] | None = None,
+    response_body: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> WhatsAppLog:
     log = WhatsAppLog(
@@ -144,7 +140,7 @@ async def _log_whatsapp(
         phone=phone,
         template_name=template_name,
         status=status,
-        wati_response=wati_response,
+        wati_response=response_body,
         error_message=error_message,
         sent_at=_utcnow(),
     )
@@ -153,116 +149,43 @@ async def _log_whatsapp(
     return log
 
 
+def _response_body(response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"text": response.text}
+    return payload if isinstance(payload, dict) else {"body": payload}
+
+
 async def send_whatsapp(
     lead_phone: str,
     template_name: str,
-    parameters: list[dict[str, str]],
-    db: AsyncSession,
-    *,
-    attach_brochure: bool = False,
+    parameters: list[dict[str, str]] | None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
-    settings = get_settings()
+    from_number = _whatsapp_from_number()
+    to_number = format_phone_for_exotel_whatsapp(lead_phone)
+    if not from_number:
+        raise RuntimeError("EXOTEL_WHATSAPP_FROM_NUMBER or EXOTEL_WA_PHONE_NUMBER is not configured")
+    if not to_number:
+        raise RuntimeError(f"Invalid lead phone for WhatsApp: {lead_phone}")
 
-    # Convert WATI-like parameter format to flat list of strings for Exotel
-    flat_params = [p["value"] for p in parameters]
-    
-    components = []
-    
-    # If attach_brochure is True, we add the header document component
-    if attach_brochure:
-        components.append({
-            "type": "header",
-            "parameters": [
-                {
-                    "type": "document",
-                    "document": {
-                        "link": BROCHURE_URL,
-                        "filename": "Woods-and-Spices.pdf"
-                    }
-                }
-            ]
-        })
-        flat_params.append(settings.BOOKING_LINK)
-        
-    # Add body parameters component
-    if flat_params:
-        components.append({
-            "type": "body",
-            "parameters": [
-                {"type": "text", "text": val} for val in flat_params
-            ]
-        })
-
-    # Exotel WhatsApp v2 endpoint and payload structure.
-    api_key = settings.EXOTEL_WA_API_KEY or ""
-    api_token = settings.EXOTEL_WA_API_TOKEN or ""
-    subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
-    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
-    url = f"https://{subdomain}/v2/accounts/{account_sid}/messages"
-
-    headers = {"Content-Type": "application/json"}
-
-    # Format phone numbers to E.164 format with + prefix
-    from_raw = settings.EXOTEL_WA_PHONE_NUMBER or ""
-    from_digits = "".join(c for c in from_raw if c.isdigit())
-    if len(from_digits) == 10:
-        from_number = f"+91{from_digits}"
-    elif len(from_digits) == 12 and from_digits.startswith("91"):
-        from_number = f"+{from_digits}"
-    else:
-        from_number = from_raw if from_raw.startswith("+") else f"+{from_raw}"
-
-    to_digits = "".join(c for c in lead_phone if c.isdigit())
-    if len(to_digits) == 10:
-        to_number = f"+91{to_digits}"
-    elif len(to_digits) == 12 and to_digits.startswith("91"):
-        to_number = f"+{to_digits}"
-    else:
-        to_number = lead_phone if lead_phone.startswith("+") else f"+{lead_phone}"
-
-    payload = {
-        "custom_data": str(uuid.uuid4()),
-        "whatsapp": {
-            "messages": [
-                {
-                    "from": from_number,
-                    "to": to_number,
-                    "content": {
-                        "recipient_type": "individual",
-                        "type": "template",
-                        "template": {
-                            "name": template_name,
-                            "language": {
-                                "code": "en",
-                                "policy": "deterministic",
-                            },
-                            "components": components,
-                        },
-                    },
-                }
-            ]
-        }
-    }
-
-    logger.info(
-        "Sending WhatsApp via Exotel v2: to=%s template=%s params=%s",
-        to_number, template_name, flat_params,
+    payload = build_exotel_template_payload(
+        from_number=from_number,
+        to_number=to_number,
+        template_name=template_name,
+        parameters=parameters,
     )
+    api_key, api_token, _, _ = _whatsapp_credentials()
+    logger.info("[WhatsApp] Exotel payload=%s", json.dumps(payload, indent=2))
 
-    async with httpx.AsyncClient(auth=(api_key, api_token), timeout=15) as client:
-        response = await client.post(url, headers=headers, json=payload)
+    async with httpx.AsyncClient(auth=httpx.BasicAuth(api_key, api_token), timeout=15.0) as client:
+        response = await client.post(_whatsapp_url(), json=payload)
 
-    response_payload: dict[str, Any]
-    try:
-        response_payload = response.json()
-    except ValueError:
-        response_payload = {"text": response.text}
-
-    logger.info("Exotel WhatsApp response: status=%s body=%s", response.status_code, response_payload)
-
+    logger.info("[WhatsApp] Exotel response=%s %s", response.status_code, response.text)
     if response.status_code >= 400:
-        raise RuntimeError(f"Exotel API failed with status {response.status_code}: {response_payload}")
-    return response_payload
+        raise RuntimeError(f"Exotel API failed with status {response.status_code}: {_response_body(response)}")
+    return _response_body(response)
 
 
 async def send_whatsapp_for_call(
@@ -277,35 +200,19 @@ async def send_whatsapp_for_call(
 
     attempt = await _load_attempt(call_attempt_id, db)
     if not attempt:
-        logger.warning("WhatsApp skipped because call_attempt_id=%s was not found", call_attempt_id)
+        logger.warning("[WhatsApp] call_attempt_id=%s not found", call_attempt_id)
         return
 
     lead: Lead = attempt.call_job.lead
-    structured = attempt.structured_data or {}
-    clean_name = _clean_name(lead.name)
-    plan = build_whatsapp_plan(clean_name, structured)
-    formatted_phone = format_wati_phone(lead.phone)
-
-    if plan.status == WhatsAppLogStatus.skipped:
-        await _log_whatsapp(
-            db,
-            lead_id=lead.id,
-            call_attempt_id=attempt.id,
-            phone=formatted_phone or lead.phone,
-            template_name=plan.template_name,
-            status=WhatsAppLogStatus.skipped,
-            error_message=plan.reason,
-        )
-        logger.info("WhatsApp skipped for call_attempt_id=%s: %s", attempt.id, plan.reason)
-        return
-
+    template_name = _template_name()
+    formatted_phone = format_phone_for_exotel_whatsapp(lead.phone)
     if not formatted_phone:
-        await _log_whatsapp(
+        await log_whatsapp(
             db,
             lead_id=lead.id,
             call_attempt_id=attempt.id,
             phone=lead.phone,
-            template_name=plan.template_name,
+            template_name=template_name,
             status=WhatsAppLogStatus.skipped,
             error_message="invalid or missing phone number",
         )
@@ -313,38 +220,31 @@ async def send_whatsapp_for_call(
 
     try:
         response = await send_whatsapp(
-            formatted_phone,
-            str(plan.template_name),
-            plan.parameters,
+            lead.phone,
+            template_name,
+            None,
             db,
-            attach_brochure=plan.attach_brochure,
         )
-        log = await _log_whatsapp(
+        await log_whatsapp(
             db,
             lead_id=lead.id,
             call_attempt_id=attempt.id,
             phone=formatted_phone,
-            template_name=plan.template_name,
+            template_name=template_name,
             status=WhatsAppLogStatus.sent,
-            wati_response=response,
+            response_body=response,
         )
-        from app.services.zoho_service import update_zoho_whatsapp_status
-
-        try:
-            await update_zoho_whatsapp_status(log.id, db)
-        except Exception:
-            logger.exception("Zoho WhatsApp status update failed for whatsapp_log_id=%s", log.id)
     except Exception as exc:
-        await _log_whatsapp(
+        await log_whatsapp(
             db,
             lead_id=lead.id,
             call_attempt_id=attempt.id,
             phone=formatted_phone,
-            template_name=plan.template_name,
+            template_name=template_name,
             status=WhatsAppLogStatus.failed,
             error_message=str(exc),
         )
-        logger.exception("WhatsApp send failed for call_attempt_id=%s", attempt.id)
+        logger.exception("[WhatsApp] send failed for call_attempt_id=%s", attempt.id)
         if retry_once:
             await asyncio.sleep(300)
             await send_whatsapp_for_call(call_attempt_id, db, retry_once=False)
@@ -355,75 +255,46 @@ async def send_whatsapp_call_completed(
     phone: str,
     summary: str | None = None,
 ) -> dict[str, Any] | None:
-    """Send call completed template manually."""
-    settings = get_settings()
-    clean = _clean_name(lead_name)
-    params = [{"name": "lead_name", "value": clean}]
-    async with AsyncSessionLocal() as session:
-        return await send_whatsapp(phone, settings.EXOTEL_WA_TEMPLATE_COMPLETED, params, session)
+    return await send_whatsapp(
+        phone,
+        _template_name(),
+        None,
+    )
 
 
 async def send_whatsapp_call_missed(
     lead_name: str,
     phone: str,
 ) -> dict[str, Any] | None:
-    """Send missed call template manually."""
-    settings = get_settings()
-    clean = _clean_name(lead_name)
-    params = [{"name": "lead_name", "value": clean}]
-    async with AsyncSessionLocal() as session:
-        return await send_whatsapp(phone, settings.EXOTEL_WA_TEMPLATE_MISSED, params, session)
+    return await send_whatsapp(
+        phone,
+        _template_name(),
+        None,
+    )
 
 
 async def send_whatsapp_custom(
     phone: str,
     text: str,
 ) -> dict[str, Any] | None:
-    """Send custom free-text WhatsApp message."""
-    settings = get_settings()
-    api_key = settings.EXOTEL_WA_API_KEY or ""
-    api_token = settings.EXOTEL_WA_API_TOKEN or ""
-    subdomain = settings.EXOTEL_WA_SUBDOMAIN or "api.in.exotel.com"
-    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or ""
-    url = f"https://{subdomain}/v2/accounts/{account_sid}/messages"
-    headers = {"Content-Type": "application/json"}
-    # Format phone numbers to E.164 format with + prefix
-    from_raw = settings.EXOTEL_WA_PHONE_NUMBER or ""
-    from_digits = "".join(c for c in from_raw if c.isdigit())
-    if len(from_digits) == 10:
-        from_number = f"+91{from_digits}"
-    elif len(from_digits) == 12 and from_digits.startswith("91"):
-        from_number = f"+{from_digits}"
-    else:
-        from_number = from_raw if from_raw.startswith("+") else f"+{from_raw}"
-
-    to_digits = "".join(c for c in phone if c.isdigit())
-    if len(to_digits) == 10:
-        to_number = f"+91{to_digits}"
-    elif len(to_digits) == 12 and to_digits.startswith("91"):
-        to_number = f"+{to_digits}"
-    else:
-        to_number = phone if phone.startswith("+") else f"+{phone}"
+    from_number = _whatsapp_from_number()
+    to_number = format_phone_for_exotel_whatsapp(phone)
+    if not from_number:
+        raise RuntimeError("EXOTEL_WHATSAPP_FROM_NUMBER or EXOTEL_WA_PHONE_NUMBER is not configured")
+    if not to_number:
+        raise RuntimeError(f"Invalid WhatsApp phone: {phone}")
 
     payload = {
-        "custom_data": str(uuid.uuid4()),
-        "whatsapp": {
-            "messages": [
-                {
-                    "from": from_number,
-                    "to": to_number,
-                    "content": {
-                        "recipient_type": "individual",
-                        "type": "text",
-                        "text": {
-                            "body": text
-                        }
-                    }
-                }
-            ]
-        }
+        "from": from_number,
+        "to": to_number,
+        "content": {
+            "recipient_type": "individual",
+            "type": "text",
+            "text": {"body": text},
+        },
     }
-    async with httpx.AsyncClient(auth=(api_key, api_token), timeout=15) as client:
-        response = await client.post(url, headers=headers, json=payload)
-    return response.json()
-
+    api_key, api_token, _, _ = _whatsapp_credentials()
+    async with httpx.AsyncClient(auth=httpx.BasicAuth(api_key, api_token), timeout=15.0) as client:
+        response = await client.post(_whatsapp_url(), json=payload)
+    response.raise_for_status()
+    return _response_body(response)

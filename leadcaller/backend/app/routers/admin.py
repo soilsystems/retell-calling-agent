@@ -150,6 +150,19 @@ async def leads(limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[di
                 "latest_interest_level": (latest_attempt.structured_data or {}).get("interest_level")
                 if latest_attempt
                 else None,
+                "latest_summary": latest_attempt.summary if latest_attempt else None,
+                "latest_callback_required": (latest_attempt.structured_data or {}).get("callback_required")
+                if latest_attempt
+                else None,
+                "latest_callback_time": (latest_attempt.structured_data or {}).get("callback_time")
+                if latest_attempt
+                else None,
+                "latest_follow_up_required": (latest_attempt.structured_data or {}).get("follow_up_required")
+                if latest_attempt
+                else None,
+                "latest_follow_up_time": (latest_attempt.structured_data or {}).get("follow_up_time")
+                if latest_attempt
+                else None,
             }
         )
     return rows
@@ -168,6 +181,7 @@ async def call_jobs(limit: int = 100, db: AsyncSession = Depends(get_db)) -> lis
             "lead_name": job.lead.name if job.lead else None,
             "phone": job.lead.phone if job.lead else None,
             "status": _status_value(job.status),
+            "trigger_reason": job.trigger_reason,
             "scheduled_at": _iso(job.scheduled_at),
             "started_at": _iso(job.started_at),
             "completed_at": _iso(job.completed_at),
@@ -196,15 +210,27 @@ async def call_attempts(limit: int = 100, db: AsyncSession = Depends(get_db)) ->
             {
                 "id": str(attempt.id),
                 "call_job_id": str(attempt.call_job_id),
+                "lead_id": str(lead.id) if lead else None,
                 "lead_name": lead.name if lead else None,
                 "phone": lead.phone if lead else None,
                 "retell_call_id": attempt.retell_call_id,
                 "attempt_number": attempt.attempt_number,
                 "status": _status_value(attempt.status),
+                "direction": _status_value(attempt.direction),
                 "recording_url": attempt.recording_url,
                 "summary": attempt.summary,
+                "transcript": attempt.transcript,
+                "structured_data": structured_data,
                 "interest_level": structured_data.get("interest_level"),
                 "follow_up_required": structured_data.get("follow_up_required"),
+                "follow_up_time": structured_data.get("follow_up_time"),
+                "callback_required": structured_data.get("callback_required"),
+                "callback_time": structured_data.get("callback_time"),
+                "call_outcome": structured_data.get("call_outcome"),
+                "caller_requirement": structured_data.get("caller_requirement")
+                or structured_data.get("caller_details")
+                or structured_data.get("requirement")
+                or structured_data.get("enquiry_details"),
                 "started_at": _iso(attempt.started_at),
                 "ended_at": _iso(attempt.ended_at),
                 "duration_seconds": attempt.duration_seconds,
@@ -316,4 +342,3 @@ async def call_lead(
 
     from app.services.exotel_service import connect_exotel_human_call
     return await connect_exotel_human_call(lead, body.agent_phone.strip(), db)
-

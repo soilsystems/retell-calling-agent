@@ -1,23 +1,35 @@
 import json
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import CrmSyncLog, Lead, WebhookEvent, WebhookSource
+from app.models import (
+    CallAttempt,
+    CallAttemptStatus,
+    CallJob,
+    CallJobStatus,
+    CrmSyncLog,
+    LanguagePreference,
+    Lead,
+    WebhookEvent,
+    WebhookSource,
+)
 from app.config import get_settings
 from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
 from app.services.retell_service import process_retell_completion, retell_event_key, schedule_retry, trigger_retell_call
 from app.services.whatsapp_service import send_whatsapp_for_call
-from app.services.zoho_service import create_followup_task, sync_to_zoho
+from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
 
 logger = logging.getLogger(__name__)
@@ -128,7 +140,11 @@ async def retell_call_completed(
 
 
 @router.post("/exotel/status")
-async def exotel_status(request: Request) -> JSONResponse:
+async def exotel_status(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         payload = await request.json()
@@ -139,7 +155,134 @@ async def exotel_status(request: Request) -> JSONResponse:
         payload = {"body": (await request.body()).decode("utf-8", errors="replace")}
 
     logger.info("Exotel status callback received: %s", payload)
-    return JSONResponse(status_code=200, content={"status": "accepted"})
+    status = _exotel_status(payload)
+    if status not in {"completed", "answered"}:
+        return JSONResponse(status_code=200, content={"status": "accepted", "call_status": status})
+
+    lead = await _find_lead_for_exotel_status(payload, db)
+    if not lead:
+        logger.warning("Exotel status callback could not resolve lead: %s", payload)
+        return JSONResponse(status_code=200, content={"status": "accepted", "whatsapp": "lead_not_found"})
+
+    attempt = await _ensure_exotel_call_attempt(lead, payload, db)
+    background_tasks.add_task(send_whatsapp_for_call, attempt.id)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "accepted", "whatsapp": "queued", "call_attempt_id": str(attempt.id)},
+    )
+
+
+def _payload_value(payload: dict[str, Any], *names: str) -> Any:
+    lowered = {str(key).lower(): value for key, value in payload.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _exotel_status(payload: dict[str, Any]) -> str:
+    raw = _payload_value(payload, "CallStatus", "Status", "call_status", "status") or ""
+    return str(raw).strip().lower().replace("-", "_")
+
+
+def _exotel_custom_field(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = _payload_value(payload, "CustomField", "custom_field", "customfield")
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"lead_name": raw}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _phone_suffix(value: Any) -> str | None:
+    if not value:
+        return None
+    digits = "".join(char for char in str(value) if char.isdigit())
+    return digits[-10:] if len(digits) >= 10 else None
+
+
+async def _find_lead_for_exotel_status(payload: dict[str, Any], db: AsyncSession) -> Lead | None:
+    custom = _exotel_custom_field(payload)
+    lead_id = custom.get("lead_id")
+    if lead_id:
+        try:
+            lead = await db.get(Lead, uuid.UUID(str(lead_id)))
+            if lead:
+                return lead
+        except ValueError:
+            logger.warning("Invalid lead_id in Exotel CustomField: %s", lead_id)
+
+    candidates = [
+        custom.get("lead_phone"),
+        _payload_value(payload, "lead_phone", "To", "From", "PhoneNumber", "Called", "Caller"),
+    ]
+    for candidate in candidates:
+        suffix = _phone_suffix(candidate)
+        if not suffix:
+            continue
+        result = await db.execute(select(Lead).where(Lead.phone.like(f"%{suffix}")).limit(1))
+        lead = result.scalars().first()
+        if lead:
+            return lead
+    return None
+
+
+async def _ensure_exotel_call_attempt(
+    lead: Lead,
+    payload: dict[str, Any],
+    db: AsyncSession,
+) -> CallAttempt:
+    call_sid = _payload_value(payload, "CallSid", "Sid", "CallUUID", "CallUuid", "call_sid") or str(uuid.uuid4())
+    retell_call_id = f"exotel:{call_sid}"
+    result = await db.execute(
+        select(CallAttempt)
+        .options(selectinload(CallAttempt.call_job))
+        .where(CallAttempt.retell_call_id == retell_call_id)
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        return existing
+
+    job_result = await db.execute(
+        select(CallJob).where(CallJob.lead_id == lead.id).order_by(desc(CallJob.created_at)).limit(1)
+    )
+    call_job = job_result.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if not call_job:
+        call_job = CallJob(
+            lead_id=lead.id,
+            status=CallJobStatus.completed,
+            scheduled_at=now,
+            started_at=now,
+            completed_at=now,
+        )
+        db.add(call_job)
+        await db.flush()
+    else:
+        call_job.status = CallJobStatus.completed
+        call_job.completed_at = call_job.completed_at or now
+
+    attempt_count = await db.scalar(select(func.count(CallAttempt.id)).where(CallAttempt.call_job_id == call_job.id))
+    attempt = CallAttempt(
+        call_job_id=call_job.id,
+        retell_call_id=retell_call_id,
+        attempt_number=int(attempt_count or 0) + 1,
+        status=CallAttemptStatus.completed,
+        structured_data={"source": "exotel", "status_callback": payload},
+        started_at=now,
+        ended_at=now,
+    )
+    db.add(attempt)
+    await db.commit()
+    await db.refresh(attempt)
+    return attempt
 
 
 @router.post("/exotel/bridge")
@@ -220,47 +363,114 @@ async def retell_inbound(
         call_inbound.get("to_number"),
     ]
     lead = await _find_lead_for_retell_inbound(candidate_numbers, db)
+    is_new_inbound_lead = False
 
     if not lead:
-        logger.info("No lead found for Retell inbound candidate numbers=%s", candidate_numbers)
-        return JSONResponse(status_code=200, content={"call_inbound": {}})
+        caller_phone = payload.get("from_number") or call_inbound.get("from_number")
+        if not caller_phone:
+            logger.info("No caller phone found for Retell inbound payload=%s", payload)
+            return JSONResponse(status_code=200, content={"call_inbound": {}})
+        lead = await _create_unknown_inbound_lead(caller_phone, db)
+        is_new_inbound_lead = True
+        logger.info("Created unknown inbound lead_id=%s phone=%s", lead.id, lead.phone)
 
     logger.info("Found matching lead for inbound call: name=%s", lead.name)
     clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
     settings = get_settings()
+    is_outbound_bridge = False if is_new_inbound_lead else await _is_recent_exotel_outbound_for_lead(lead, db)
+    call_direction = "outbound" if is_outbound_bridge else "inbound"
+
+    outbound_bridge_script = (
+        "Outbound callback/sales call. Start by confirming the lead is available, "
+        "then remind them they had enquired about Soil Systems land investment. "
+        "Do not thank them for calling. Ask whether they want details, a brochure, "
+        "or a site visit."
+    )
+    inbound_script = (
+        "Inbound support/enquiry call. The lead called us. Thank them for calling, "
+        "ask how you can help, then answer questions and qualify their interest. "
+        "Do not say you are calling them about an enquiry."
+    )
+    unknown_inbound_script = (
+        "New inbound caller. Their name is not in Zoho yet. Thank them for calling Soil Systems, "
+        "introduce yourself as Vikas, ask for their name, city, and what details they need about "
+        "the land project. Confirm their phone number if needed. Save the collected details in "
+        "structured data using caller_name, caller_city, caller_email if shared, and caller_requirement."
+    )
+    call_script = (
+        outbound_bridge_script
+        if is_outbound_bridge
+        else unknown_inbound_script if is_new_inbound_lead or clean_name.lower() == "unknown" else inbound_script
+    )
 
     variables = {
         "lead_name": clean_name,
         "customer_name": clean_name,
         "name": clean_name,
+        "agent_name": "Vikas",
         "phone": lead.phone,
         "language": lead.language_preference.value,
         "city": lead.city or "",
         "campaign": lead.campaign or "",
         "zoho_lead_id": lead.zoho_lead_id,
+        "call_direction": call_direction,
+        "inbound_call": "false" if is_outbound_bridge else "true",
+        "outbound_bridge_call": "true" if is_outbound_bridge else "false",
+        "call_context": call_direction,
+        "call_script": call_script,
+        "conversation_script": call_script,
+        "opening_instruction": (
+            "You placed this outbound callback call to the lead."
+            if is_outbound_bridge
+            else "This is a new inbound caller; collect their name and enquiry details."
+            if is_new_inbound_lead or clean_name.lower() == "unknown"
+            else "The lead called Soil Systems inbound."
+        ),
+        "caller_known": "false" if is_new_inbound_lead or clean_name.lower() == "unknown" else "true",
     }
+    begin_message = (
+        (
+            f"Hello, am I speaking with {clean_name}? "
+            "This is Vikas calling from Soil Systems about your land investment enquiry."
+        )
+        if is_outbound_bridge
+        else (
+            "Hi, thank you for calling Soil Systems. This is Vikas. "
+            "May I know your name and what details you are looking for today?"
+        )
+        if is_new_inbound_lead or clean_name.lower() == "unknown"
+        else (
+            f"Hi {clean_name}, thank you for calling Soil Systems. "
+            "This is Vikas. How can I help you today?"
+        )
+    )
+    logger.info(
+        "Retell inbound answer for lead_id=%s using call_direction=%s begin_message=%s",
+        lead.id,
+        call_direction,
+        begin_message,
+    )
 
     call_inbound_response = {
         "override_agent_id": settings.RETELL_AGENT_ID,
         "dynamic_variables": variables,
+        "retell_llm_dynamic_variables": variables,
         "agent_override": {
             "retell_llm": {
-                "begin_message": (
-                    f"Hello, am I speaking with {clean_name}? "
-                    "This is Viraj calling from Soil Systems."
-                )
+                "begin_message": begin_message,
+                "general_prompt": call_script,
             },
             "conversation_flow": {
-                "begin_message": (
-                    f"Hello, am I speaking with {clean_name}? "
-                    "This is Viraj calling from Soil Systems."
-                )
+                "begin_message": begin_message,
+                "global_prompt": call_script,
             },
         },
         "metadata": {
             "lead_id": str(lead.id),
             "zoho_lead_id": lead.zoho_lead_id,
             "source": "leadcaller_retell_inbound",
+            "call_direction": call_direction,
+            "new_inbound_lead": is_new_inbound_lead,
         },
     }
     if settings.RETELL_AGENT_VERSION is not None:
@@ -273,6 +483,7 @@ async def retell_inbound(
 
 
 async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db: AsyncSession) -> Lead | None:
+    searched_phone_number = False
     for raw_number in candidate_numbers:
         if not raw_number:
             continue
@@ -280,12 +491,16 @@ async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db:
         suffix = digits[-10:] if len(digits) >= 10 else digits
         if not suffix:
             continue
+        searched_phone_number = True
         result = await db.execute(
             select(Lead).where((Lead.phone == raw_number) | (Lead.phone.like(f"%{suffix}"))).limit(1)
         )
         lead = result.scalars().first()
         if lead:
             return lead
+
+    if searched_phone_number:
+        return None
 
     result = await db.execute(
         select(CrmSyncLog)
@@ -297,3 +512,37 @@ async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db:
     latest_exotel_log = result.scalar_one_or_none()
     return latest_exotel_log.lead if latest_exotel_log else None
 
+
+async def _create_unknown_inbound_lead(caller_phone: str, db: AsyncSession) -> Lead:
+    existing = await _find_lead_for_retell_inbound([caller_phone], db)
+    if existing:
+        return existing
+
+    zoho_lead_id = await create_zoho_lead_for_inbound(caller_phone, db)
+    lead = Lead(
+        zoho_lead_id=zoho_lead_id,
+        name="Unknown",
+        phone=caller_phone,
+        language_preference=LanguagePreference.english,
+        source="Inbound Call",
+    )
+    db.add(lead)
+    await db.commit()
+    await db.refresh(lead)
+    return lead
+
+
+async def _is_recent_exotel_outbound_for_lead(lead: Lead, db: AsyncSession) -> bool:
+    window_start = datetime.now(timezone.utc) - timedelta(minutes=5)
+    result = await db.execute(
+        select(CrmSyncLog)
+        .where(CrmSyncLog.lead_id == lead.id)
+        .where(CrmSyncLog.operation == "exotel_connect_call")
+        .where(CrmSyncLog.success.is_(True))
+        .where(CrmSyncLog.synced_at >= window_start)
+        .order_by(desc(CrmSyncLog.synced_at))
+        .limit(1)
+    )
+    if not hasattr(result, "scalar_one_or_none"):
+        return False
+    return result.scalar_one_or_none() is not None

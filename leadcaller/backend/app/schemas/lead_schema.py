@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from app.models.enums import LanguagePreference
 
@@ -21,3 +21,24 @@ class ZohoLeadWebhook(BaseModel):
     source: str | None = Field(default=None, max_length=120)
     campaign: str | None = Field(default=None, max_length=120)
     received_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_blank_language(cls, data):
+        if isinstance(data, dict) and not data.get("language_preference"):
+            data = {**data, "language_preference": LanguagePreference.english.value}
+        return data
+
+    @field_validator("language_preference", mode="before")
+    @classmethod
+    def parse_language(cls, value):
+        if isinstance(value, LanguagePreference):
+            return value
+        return LanguagePreference(str(value).strip().lower())
+
+    @field_validator("received_at", mode="before")
+    @classmethod
+    def parse_received_at(cls, value):
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return value

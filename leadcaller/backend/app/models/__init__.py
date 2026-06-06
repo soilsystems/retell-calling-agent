@@ -4,6 +4,7 @@ from app.models.campaign_metric import CampaignMetric
 from app.models.crm_sync_log import CrmSyncLog
 from app.models.enums import (
     CallAttemptStatus,
+    CallDirection,
     CallJobStatus,
     FollowupStatus,
     LanguagePreference,
@@ -19,6 +20,7 @@ from app.models.zoho_token import ZohoToken
 __all__ = [
     "CallAttempt",
     "CallAttemptStatus",
+    "CallDirection",
     "CallJob",
     "CallJobStatus",
     "CampaignMetric",

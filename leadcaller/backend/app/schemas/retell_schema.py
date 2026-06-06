@@ -5,17 +5,24 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RetellStructuredData(BaseModel):
-    model_config = ConfigDict(strict=True, extra="ignore")
+    model_config = ConfigDict(strict=True, extra="allow")
 
     interest_level: str = Field(pattern="^(Hot|Warm|Cold|Not Interested)$")
     budget: str | None = None
     timeline: str | None = None
     property_type: str | None = None
+    caller_name: str | None = None
+    caller_email: str | None = None
+    caller_city: str | None = None
+    caller_requirement: str | None = None
+    caller_details: str | None = None
     language: str | None = None
     follow_up_required: bool = False
     follow_up_time: datetime | None = None
     site_visit_agreed: bool = False
     site_visit_day: str | None = None
+    callback_required: bool = False
+    callback_time: datetime | None = None
 
 
 class RetellCallCompletedWebhook(BaseModel):
@@ -29,6 +36,9 @@ class RetellCallCompletedWebhook(BaseModel):
     duration_seconds: int | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    direction: str = "outbound"
+    from_number: str | None = None
+    to_number: str | None = None
     structured_data: RetellStructuredData | dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] | None = None
 
@@ -56,6 +66,9 @@ class RetellCallCompletedWebhook(BaseModel):
             "duration_seconds": _duration_seconds(call),
             "started_at": _datetime_from_retell(call.get("start_timestamp")),
             "ended_at": _datetime_from_retell(call.get("end_timestamp")),
+            "direction": call.get("direction") or call.get("call_direction") or "outbound",
+            "from_number": call.get("from_number"),
+            "to_number": call.get("to_number"),
             "structured_data": structured_data,
             "metadata": call.get("metadata"),
         }

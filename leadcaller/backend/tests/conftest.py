@@ -30,6 +30,7 @@ os.environ.setdefault("WATI_API_ENDPOINT", "https://live-test.wati.io")
 os.environ.setdefault("WATI_API_TOKEN", "wati-token")
 os.environ.setdefault("BASE_URL", "https://leadcaller.example.com")
 os.environ.setdefault("ENVIRONMENT", "dev")
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 from app.main import app  # noqa: E402
 

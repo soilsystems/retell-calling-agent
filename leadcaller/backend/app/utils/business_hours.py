@@ -1,6 +1,8 @@
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import pytz
+
 BUSINESS_TZ = "Asia/Kolkata"
 BUSINESS_START = time(9, 0)
 BUSINESS_END = time(19, 0)
@@ -41,3 +43,15 @@ def next_business_slot(dt: datetime) -> datetime:
         return datetime.combine(next_day.date(), BUSINESS_START, ZoneInfo(BUSINESS_TZ)).astimezone(timezone.utc)
 
     return local_dt.astimezone(timezone.utc)
+
+
+def get_next_business_day_at_10am() -> datetime:
+    ist = pytz.timezone(BUSINESS_TZ)
+    now_ist = datetime.now(ist)
+    next_day = now_ist + timedelta(days=1)
+
+    while next_day.weekday() == 6:
+        next_day += timedelta(days=1)
+
+    next_call = next_day.replace(hour=10, minute=0, second=0, microsecond=0)
+    return next_call.astimezone(pytz.utc).replace(tzinfo=None)

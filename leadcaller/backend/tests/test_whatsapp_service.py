@@ -1,3 +1,5 @@
+import base64
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -8,12 +10,15 @@ from httpx import Response
 from app.models import CallAttempt, CallAttemptStatus, CallJob, CallJobStatus, LanguagePreference, Lead, WhatsAppLogStatus
 from app.services import whatsapp_service
 from app.services.whatsapp_service import (
-    BROCHURE_TEMPLATE,
-    FOLLOWUP_TEMPLATE,
-    SITE_VISIT_TEMPLATE,
+    SOIL_SYSTEMS_TEMPLATE,
+    build_exotel_template_payload,
+    format_phone_for_exotel_whatsapp,
     format_wati_phone,
     send_whatsapp_for_call,
 )
+
+
+EXOTEL_URL = "https://api.in.exotel.com/v2/accounts/test-account-sid/messages"
 
 
 class FakeDb:
@@ -28,7 +33,7 @@ class FakeDb:
         self.commits += 1
 
 
-def make_attempt(phone="+919876543210", name="Rahul", structured=None):
+def make_attempt(phone="+919876543210", name="Rahul"):
     lead = Lead(
         id=uuid4(),
         zoho_lead_id="zoho-1",
@@ -52,21 +57,25 @@ def make_attempt(phone="+919876543210", name="Rahul", structured=None):
         retell_call_id="retell-call-1",
         attempt_number=1,
         status=CallAttemptStatus.completed,
-        structured_data=structured or {},
+        structured_data={"interest_level": "Hot"},
     )
 
 
 @pytest.fixture
 def exotel_wa_settings(monkeypatch):
     settings = SimpleNamespace(
+        EXOTEL_ACCOUNT_SID="fallback-account",
+        EXOTEL_API_KEY="fallback-key",
+        EXOTEL_API_TOKEN="fallback-token",
+        EXOTEL_SUBDOMAIN="api.exotel.com",
+        EXOTEL_WHATSAPP_NUMBER=None,
+        EXOTEL_WHATSAPP_FROM_NUMBER="+918047283246",
         EXOTEL_WA_SUBDOMAIN="api.in.exotel.com",
         EXOTEL_WA_ACCOUNT_SID="test-account-sid",
         EXOTEL_WA_API_KEY="test-api-key",
         EXOTEL_WA_API_TOKEN="test-api-token",
         EXOTEL_WA_PHONE_NUMBER="+918047283246",
-        BOOKING_LINK="https://soilsystems.in/book",
-        EXOTEL_WA_TEMPLATE_COMPLETED="call_followup",
-        EXOTEL_WA_TEMPLATE_MISSED="call_missed",
+        EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS=SOIL_SYSTEMS_TEMPLATE,
     )
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: settings)
     return settings
@@ -76,15 +85,8 @@ def exotel_wa_settings(monkeypatch):
 def mock_sleep(monkeypatch):
     async def fake_sleep(seconds):
         return None
+
     monkeypatch.setattr("app.services.whatsapp_service.asyncio.sleep", fake_sleep)
-
-
-@pytest.fixture
-def disable_zoho_update(monkeypatch):
-    async def fake_update(log_id, db, retry_once=True):
-        return None
-
-    monkeypatch.setattr("app.services.zoho_service.update_zoho_whatsapp_status", fake_update)
 
 
 async def run_for_attempt(monkeypatch, attempt, db=None):
@@ -97,124 +99,121 @@ async def run_for_attempt(monkeypatch, attempt, db=None):
     return db
 
 
-def assert_sent_log(db, template_name):
-    log = db.rows[-1]
-    assert log.status == WhatsAppLogStatus.sent
-    assert log.template_name == template_name
-    return log
+def request_json(route):
+    return json.loads(route.calls.last.request.content.decode())
 
 
-@pytest.mark.asyncio
-async def test_site_visit_agreed_sends_template_1(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
-    with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, SITE_VISIT_TEMPLATE)
-    body = route.calls.last.request.read().decode()
-    assert "soil_systems_site_visit" in body
-    assert "Saturday" in body
+def assert_basic_auth(route):
+    expected = base64.b64encode(b"test-api-key:test-api-token").decode()
+    assert route.calls.last.request.headers["Authorization"] == f"Basic {expected}"
 
 
-@pytest.mark.asyncio
-async def test_followup_required_sends_template_2(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"follow_up_required": True, "follow_up_time": "2026-05-21T10:00:00+05:30"})
-    with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, FOLLOWUP_TEMPLATE)
-
-
-@pytest.mark.asyncio
-async def test_hot_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Hot"})
-    with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, BROCHURE_TEMPLATE)
-    body = route.calls.last.request.read().decode()
-    assert "soil_systems" in body
-    assert "https://soilsystems.in/book" in body
-
-
-@pytest.mark.asyncio
-async def test_warm_lead_no_site_visit_sends_template_3(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Warm"})
-    with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, BROCHURE_TEMPLATE)
-
-
-@pytest.mark.asyncio
-async def test_cold_lead_skips_whatsapp(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Cold"})
-    with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, "call_followup")
-
-
-@pytest.mark.asyncio
-async def test_not_interested_skips_whatsapp(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Not Interested"})
-    with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert_sent_log(db, "call_followup")
-
-
-@pytest.mark.asyncio
-async def test_site_visit_true_takes_priority_over_followup(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(
-        structured={"site_visit_agreed": True, "follow_up_required": True, "site_visit_day": "Sunday"}
+def test_build_exotel_template_payload_matches_documentation_shape():
+    payload = build_exotel_template_payload(
+        from_number="+919876500001",
+        to_number="+919876543210",
+        template_name="order_confirmation",
+        parameters=[
+            {"type": "text", "text": "Rahul"},
+            {"type": "text", "text": "#ORD-12345"},
+            {"type": "text", "text": "Feb 10, 2024"},
+        ],
     )
-    with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
 
-    assert_sent_log(db, SITE_VISIT_TEMPLATE)
-    assert "soil_systems_followup" not in route.calls.last.request.read().decode()
+    message = payload["whatsapp"]["messages"][0]
+    assert "custom_data" in payload
+    assert message == {
+        "from": "+919876500001",
+        "to": "+919876543210",
+        "content": {
+            "recipient_type": "individual",
+            "type": "template",
+            "template": {
+                "name": "order_confirmation",
+                "language": {
+                    "code": "en",
+                    "policy": "deterministic",
+                },
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": "Rahul"},
+                            {"type": "text", "text": "#ORD-12345"},
+                            {"type": "text", "text": "Feb 10, 2024"},
+                        ],
+                    }
+                ],
+            },
+        },
+    }
 
 
 @pytest.mark.asyncio
-async def test_invalid_phone_logs_skipped(monkeypatch):
-    attempt = make_attempt(phone="080-12345678", structured={"interest_level": "Hot"})
+async def test_call_completion_sends_soil_systems_template_to_lead_phone(monkeypatch, exotel_wa_settings):
+    attempt = make_attempt(phone="+919876543210", name="Rahul")
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(EXOTEL_URL).mock(return_value=Response(200, json={"message": {"sid": "msg-123"}}))
+        db = await run_for_attempt(monkeypatch, attempt)
+
+    payload = request_json(route)
+    message = payload["whatsapp"]["messages"][0]
+    assert message["from"] == "+918047283246"
+    assert message["to"] == "+919876543210"
+    assert message["content"]["recipient_type"] == "individual"
+    assert message["content"]["type"] == "template"
+    assert message["content"]["template"]["name"] == "soil_systems"
+    assert message["content"]["template"]["language"] == {"code": "en", "policy": "deterministic"}
+    assert message["content"]["template"]["components"] == []
+    assert_basic_auth(route)
+    assert db.rows[-1].status == WhatsAppLogStatus.sent
+    assert db.rows[-1].template_name == "soil_systems"
+    assert db.rows[-1].phone == "+919876543210"
+
+
+@pytest.mark.asyncio
+async def test_10_digit_lead_phone_gets_plus_91_prefix(monkeypatch, exotel_wa_settings):
+    attempt = make_attempt(phone="9876543210")
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(EXOTEL_URL).mock(return_value=Response(200, json={"message": {"sid": "msg-123"}}))
+        await run_for_attempt(monkeypatch, attempt)
+
+    assert request_json(route)["whatsapp"]["messages"][0]["to"] == "+919876543210"
+
+
+@pytest.mark.asyncio
+async def test_sender_falls_back_to_legacy_wa_phone_number(monkeypatch, exotel_wa_settings):
+    exotel_wa_settings.EXOTEL_WHATSAPP_FROM_NUMBER = None
+    exotel_wa_settings.EXOTEL_WHATSAPP_NUMBER = None
+    exotel_wa_settings.EXOTEL_WA_PHONE_NUMBER = "+918047283246"
+    attempt = make_attempt()
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(EXOTEL_URL).mock(return_value=Response(200, json={"message": {"sid": "msg-123"}}))
+        await run_for_attempt(monkeypatch, attempt)
+
+    assert request_json(route)["whatsapp"]["messages"][0]["from"] == "+918047283246"
+
+
+@pytest.mark.asyncio
+async def test_invalid_phone_logs_skipped(monkeypatch, exotel_wa_settings):
+    attempt = make_attempt(phone="not-a-phone")
     db = await run_for_attempt(monkeypatch, attempt)
 
     log = db.rows[-1]
     assert log.status == WhatsAppLogStatus.skipped
+    assert log.template_name == "soil_systems"
     assert log.error_message == "invalid or missing phone number"
 
 
 @pytest.mark.asyncio
-async def test_exotel_api_failure_logs_failed(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Hot"})
+async def test_exotel_api_failure_logs_failed(monkeypatch, exotel_wa_settings):
+    attempt = make_attempt()
 
     with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(500, json={"error": "down"})
-        )
+        router.post(EXOTEL_URL).mock(return_value=Response(500, json={"error": "down"}))
         db = await run_for_attempt(monkeypatch, attempt)
 
     assert db.rows[-1].status == WhatsAppLogStatus.failed
@@ -222,11 +221,11 @@ async def test_exotel_api_failure_logs_failed(monkeypatch, exotel_wa_settings, d
 
 
 @pytest.mark.asyncio
-async def test_exotel_retry_on_failure(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    attempt = make_attempt(structured={"interest_level": "Hot"})
+async def test_exotel_retry_on_failure(monkeypatch, exotel_wa_settings):
+    attempt = make_attempt()
 
     with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
+        route = router.post(EXOTEL_URL).mock(
             side_effect=[
                 Response(500, json={"error": "down"}),
                 Response(200, json={"message": {"sid": "msg-123"}}),
@@ -239,48 +238,8 @@ async def test_exotel_retry_on_failure(monkeypatch, exotel_wa_settings, disable_
     assert db.rows[-1].status == WhatsAppLogStatus.sent
 
 
-def test_phone_formatted_correctly_removes_plus():
+def test_phone_format_helpers():
+    assert format_phone_for_exotel_whatsapp("+919876543210") == "+919876543210"
+    assert format_phone_for_exotel_whatsapp("9876543210") == "+919876543210"
+    assert format_phone_for_exotel_whatsapp("09876543210") == "+919876543210"
     assert format_wati_phone("+919876543210") == "919876543210"
-
-
-def test_phone_formatted_correctly_adds_91_prefix():
-    assert format_wati_phone("9876543210") == "919876543210"
-
-
-@pytest.mark.asyncio
-async def test_zoho_updated_after_whatsapp_sent(monkeypatch, exotel_wa_settings):
-    attempt = make_attempt(structured={"interest_level": "Warm"})
-    captured = {}
-
-    async def fake_update(log_id, db, retry_once=True):
-        captured["log_id"] = log_id
-
-    monkeypatch.setattr("app.services.zoho_service.update_zoho_whatsapp_status", fake_update)
-    with respx.mock(assert_all_called=True) as router:
-        router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        db = await run_for_attempt(monkeypatch, attempt)
-
-    assert captured["log_id"] == db.rows[-1].id
-
-
-@pytest.mark.asyncio
-async def test_exotel_payload_structure(monkeypatch, exotel_wa_settings, disable_zoho_update):
-    import json
-    attempt = make_attempt(structured={"site_visit_agreed": True, "site_visit_day": "Saturday"})
-    with respx.mock(assert_all_called=True) as router:
-        route = router.post("https://api.in.exotel.com/v2/accounts/test-account-sid/messages").mock(
-            return_value=Response(200, json={"message": {"sid": "msg-123"}})
-        )
-        await run_for_attempt(monkeypatch, attempt)
-
-    request_payload = json.loads(route.calls.last.request.read().decode())
-    assert "whatsapp" in request_payload
-    msg = request_payload["whatsapp"]["messages"][0]
-    assert msg["from"] == "+918047283246"
-    assert msg["to"] == "+919876543210"
-    assert msg["content"]["type"] == "template"
-    assert msg["content"]["template"]["name"] == "soil_systems_site_visit"
-    assert msg["content"]["template"]["language"]["policy"] == "deterministic"
-

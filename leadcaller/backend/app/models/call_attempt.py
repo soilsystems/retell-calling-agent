@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.models.enums import CallAttemptStatus
+from app.models.enums import CallAttemptStatus, CallDirection
 
 
 class CallAttempt(Base):
@@ -24,6 +24,11 @@ class CallAttempt(Base):
         Enum(CallAttemptStatus, name="call_attempt_status"),
         nullable=False,
         default=CallAttemptStatus.initiated,
+    )
+    direction: Mapped[CallDirection] = mapped_column(
+        Enum(CallDirection, name="call_direction"),
+        nullable=False,
+        default=CallDirection.outbound,
     )
     recording_url: Mapped[str | None] = mapped_column(Text)
     transcript: Mapped[str | None] = mapped_column(Text)

@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     EXOTEL_ACCOUNT_SID: str | None = None
     EXOTEL_API_KEY: str | None = None
     EXOTEL_API_TOKEN: str | None = None
+    EXOTEL_WHATSAPP_NUMBER: str | None = None
+    EXOTEL_WHATSAPP_FROM_NUMBER: str | None = None
     EXOTEL_SUBDOMAIN: str | None = None
     EXOTEL_TRUNK_SID: str | None = None
     EXOTEL_PHONE_NUMBER: str | None = None
@@ -62,6 +64,7 @@ class Settings(BaseSettings):
     EXOTEL_WA_ACCOUNT_SID: str | None = None
     EXOTEL_WA_SUBDOMAIN: str = "api.in.exotel.com"
     EXOTEL_WA_PHONE_NUMBER: str | None = None
+    EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS: str = "soil_systems"
     EXOTEL_WA_TEMPLATE_COMPLETED: str = "call_followup"
     EXOTEL_WA_TEMPLATE_MISSED: str = "call_missed"
     BOOKING_LINK: str = "https://soilsystems.in/book"
@@ -69,6 +72,7 @@ class Settings(BaseSettings):
     BASE_URL: str
     ENVIRONMENT: Literal["dev", "staging", "prod"] = "dev"
     LOG_LEVEL: str = "INFO"
+    SCHEDULER_ENABLED: bool = True
 
 
 @lru_cache

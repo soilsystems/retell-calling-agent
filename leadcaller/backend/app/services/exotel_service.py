@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -113,7 +114,13 @@ async def connect_exotel_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
         "Url": exoml_url,                              # ExoML app — runs when lead picks up
         "CallType": settings.EXOTEL_CALL_TYPE,
         "StatusCallback": status_callback,
-        "CustomField": lead.name,
+        "CustomField": json.dumps(
+            {
+                "lead_id": str(lead.id),
+                "lead_name": lead.name,
+                "lead_phone": format_phone_number(lead.phone),
+            }
+        ),
     }
     url = f"https://{subdomain.rstrip('/')}/v1/Accounts/{account_sid}/Calls/connect"
 
@@ -212,6 +219,13 @@ async def connect_exotel_human_call(lead: Lead, agent_phone: str, db: AsyncSessi
         "CallType": settings.EXOTEL_CALL_TYPE,
         "Record": "true",
         "StatusCallback": status_callback,
+        "CustomField": json.dumps(
+            {
+                "lead_id": str(lead.id),
+                "lead_name": lead.name,
+                "lead_phone": format_phone_number(lead.phone),
+            }
+        ),
     }
     url = f"https://{subdomain.rstrip('/')}/v1/Accounts/{account_sid}/Calls/connect"
 
@@ -272,4 +286,3 @@ async def connect_exotel_human_call(lead: Lead, agent_phone: str, db: AsyncSessi
         "agent_phone": agent_phone,
         "provider_response": response_data,
     }
-

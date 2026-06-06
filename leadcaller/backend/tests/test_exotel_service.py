@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -62,7 +63,10 @@ async def test_connect_exotel_call_posts_expected_form(monkeypatch):
     assert form["CallerId"] == ["08000000000"]
     assert form["Url"] == ["http://my.exotel.com/account-sid/exoml/start_voice/app-id"]
     assert form["CallType"] == ["trans"]
-    assert form["CustomField"] == ["Ravi"]
+    custom_field = json.loads(form["CustomField"][0])
+    assert custom_field["lead_id"] == str(lead.id)
+    assert custom_field["lead_name"] == "Ravi"
+    assert custom_field["lead_phone"] == "+919876543210"
     assert result["status"] == "queued"
     assert result["mode"] == "exotel"
     assert db.rows[-1].operation == "exotel_connect_call"
@@ -122,4 +126,3 @@ def test_format_phone_number():
     assert format_phone_number("+91 98765-43210") == "+919876543210"
     assert format_phone_number("+9109876543210") == "+919876543210"
     assert format_phone_number("  98765  43210  ") == "+919876543210"
-

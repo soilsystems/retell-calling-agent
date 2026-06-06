@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -43,6 +44,52 @@ def _clean_phone(value: str | None) -> str:
     if value.startswith("+"):
         return value.strip()
     return value.strip()
+
+
+def _parse_follow_up_time(value: Any, reference_time: datetime | None = None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+
+    reference = reference_time or _utcnow()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    else:
+        reference = reference.astimezone(timezone.utc)
+
+    match = re.search(
+        r"(?:after|in)?\s*(?:about\s*)?(\d+|one|two|three|four|five|ten|fifteen|thirty)\s*"
+        r"(minute|minutes|min|mins|hour|hours|hr|hrs)",
+        text.lower(),
+    )
+    if not match:
+        return None
+
+    numbers = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "ten": 10,
+        "fifteen": 15,
+        "thirty": 30,
+    }
+    amount = numbers.get(match.group(1), int(match.group(1)) if match.group(1).isdigit() else None)
+    if amount is None:
+        return None
+
+    if match.group(2).startswith(("hour", "hr")):
+        return reference + timedelta(hours=amount)
+    return reference + timedelta(minutes=amount)
 
 
 def _lead_name(raw: dict[str, Any]) -> str:
@@ -203,6 +250,35 @@ async def sync_recent_zoho_leads(db: AsyncSession, limit: int = 100) -> dict[str
     return {"fetched": len(raw_leads), "synced": synced, "skipped": skipped}
 
 
+async def create_zoho_lead_for_inbound(phone: str, db: AsyncSession) -> str:
+    settings = get_settings()
+    access_token = await get_zoho_access_token(db)
+    body = {
+        "data": [
+            {
+                "Last_Name": "Unknown",
+                "Full_Name": "Unknown",
+                "Mobile": _clean_phone(phone),
+                "Lead_Source": "Inbound Call",
+                "Description": "Lead created automatically from inbound Retell call.",
+            }
+        ]
+    }
+    response = await _request_with_retry(
+        "POST",
+        f"{settings.ZOHO_API_DOMAIN}/crm/v6/Leads",
+        headers={"Authorization": f"Zoho-oauthtoken {access_token}"},
+        json=body,
+    )
+    response.raise_for_status()
+    data = response.json()
+    details = (data.get("data") or [{}])[0].get("details") or {}
+    zoho_lead_id = details.get("id")
+    if not zoho_lead_id:
+        raise RuntimeError(f"Zoho inbound lead creation returned no id: {data}")
+    return str(zoho_lead_id)
+
+
 async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAttempt | None:
     result = await db.execute(
         select(CallAttempt)
@@ -259,6 +335,10 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
         "Follow_up_DateTime": structured.get("follow_up_time"),
         "AI_Call_Attempt_Count": 1,
         "Last_AI_Call_Time": _utcnow().isoformat(),
+        "AI_Callback_Scheduled": bool(structured.get("callback_required")),
+        "AI_Callback_Time": structured.get("callback_time"),
+        "AI_Call_Direction": getattr(attempt.direction, "value", str(attempt.direction)).title(),
+        "AI_Last_Call_Trigger_Reason": attempt.call_job.trigger_reason,
     }
     whatsapp_log = await _latest_whatsapp_log(call_attempt_id, db)
     if whatsapp_log:
@@ -269,6 +349,21 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
     lead_status = _lead_status(structured.get("interest_level"))
     if lead_status:
         fields["Lead_Status"] = lead_status
+    if lead.source == "Inbound Call":
+        if lead.name and lead.name.lower() != "unknown":
+            fields["Last_Name"] = lead.name
+        if lead.email:
+            fields["Email"] = lead.email
+        if lead.city:
+            fields["City"] = lead.city
+        caller_requirement = (
+            structured.get("caller_requirement")
+            or structured.get("caller_details")
+            or structured.get("requirement")
+            or structured.get("enquiry_details")
+        )
+        if caller_requirement or attempt.summary:
+            fields["Description"] = str(caller_requirement or attempt.summary)[:32000]
 
     try:
         response = await _request_with_retry(
@@ -364,12 +459,17 @@ async def create_followup_task(call_attempt_id: uuid.UUID, db: AsyncSession | No
     follow_up_time = structured.get("follow_up_time")
     if not follow_up_time:
         return
+    scheduled_at = _parse_follow_up_time(follow_up_time, attempt.ended_at or attempt.started_at)
+    if scheduled_at is None:
+        logger.warning("Invalid follow_up_time for call_attempt_id=%s: %s", call_attempt_id, follow_up_time)
+        return
+    due_date = scheduled_at.isoformat()
 
     access_token = await get_zoho_access_token(db)
     followup = Followup(
         lead_id=lead.id,
         call_attempt_id=attempt.id,
-        scheduled_at=datetime.fromisoformat(str(follow_up_time).replace("Z", "+00:00")),
+        scheduled_at=scheduled_at,
         status=FollowupStatus.pending,
     )
     db.add(followup)
@@ -379,7 +479,7 @@ async def create_followup_task(call_attempt_id: uuid.UUID, db: AsyncSession | No
         "data": [
             {
                 "Subject": f"Follow up - AI call: {lead.name}",
-                "Due_Date": follow_up_time,
+                "Due_Date": due_date,
                 "Status": "Not Started",
                 "Priority": "High" if structured.get("interest_level") == "Hot" else "Normal",
                 "Description": attempt.summary,

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   AlertCircle,
+  ArrowRight,
   BarChart3,
   Bot,
   CalendarClock,
@@ -58,31 +59,52 @@ type Lead = {
   latest_call_job_id?: string | null;
   latest_attempt_status?: string | null;
   latest_interest_level?: string | null;
+  latest_summary?: string | null;
+  latest_callback_required?: boolean | null;
+  latest_callback_time?: string | null;
+  latest_follow_up_required?: boolean | null;
+  latest_follow_up_time?: string | null;
 };
 
 type CallJob = {
   id: string;
+  lead_id: string;
   lead_name?: string | null;
   phone?: string | null;
   status: string;
+  trigger_reason?: string | null;
   scheduled_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
   retry_count: number;
   max_retries: number;
+  created_at?: string | null;
 };
 
 type CallAttempt = {
   id: string;
+  lead_id?: string | null;
+  call_job_id: string;
   lead_name?: string | null;
   phone?: string | null;
   retell_call_id: string;
   attempt_number: number;
   status: string;
+  direction?: string | null;
   recording_url?: string | null;
   summary?: string | null;
+  transcript?: string | null;
+  structured_data?: Record<string, unknown>;
   interest_level?: string | null;
   follow_up_required?: boolean | null;
+  follow_up_time?: string | null;
+  callback_required?: boolean | null;
+  callback_time?: string | null;
+  call_outcome?: string | null;
+  caller_requirement?: string | null;
   duration_seconds?: number | null;
   started_at?: string | null;
+  ended_at?: string | null;
 };
 
 type WebhookEvent = {
@@ -96,6 +118,7 @@ type WebhookEvent = {
 
 type Followup = {
   id: string;
+  lead_id: string;
   lead_name?: string | null;
   scheduled_at?: string | null;
   zoho_task_id?: string | null;
@@ -104,6 +127,7 @@ type Followup = {
 
 type CrmSyncLog = {
   id: string;
+  lead_id?: string | null;
   lead_name?: string | null;
   operation: string;
   success: boolean;
@@ -116,10 +140,11 @@ type Health = {
   environment: string;
 };
 
-type TabKey = "overview" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync" | "whatsapp";
+type TabKey = "overview" | "activity" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync" | "whatsapp";
 
 const tabs: Array<{ key: TabKey; label: string; icon: IconComponent }> = [
   { key: "overview", label: "Overview", icon: BarChart3 },
+  { key: "activity", label: "Lead Activity", icon: PhoneCall },
   { key: "leads", label: "Leads", icon: Users },
   { key: "jobs", label: "Call Jobs", icon: Phone },
   { key: "attempts", label: "Attempts", icon: Headphones },
@@ -150,6 +175,21 @@ const statusClass = (value?: string | null) => {
   if (["in_progress", "answered", "cold"].includes(status)) return "info";
   return "neutral";
 };
+
+const isDueSoon = (value?: string | null) => {
+  if (!value) return false;
+  const time = new Date(value).getTime();
+  const now = Date.now();
+  return time >= now && time - now <= 60 * 60 * 1000;
+};
+
+const byLatestDate = <T extends { started_at?: string | null; scheduled_at?: string | null; created_at?: string | null }>(
+  rows: T[]
+) => [...rows].sort((a, b) => {
+  const left = new Date(a.started_at || a.scheduled_at || a.created_at || 0).getTime();
+  const right = new Date(b.started_at || b.scheduled_at || b.created_at || 0).getTime();
+  return right - left;
+});
 
 function useDashboardData() {
   const [summary, setSummary] = React.useState<Summary | null>(null);
@@ -437,7 +477,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = React.useState<TabKey>("overview");
+  const [activeTab, setActiveTab] = React.useState<TabKey>("activity");
   const [query, setQuery] = React.useState("");
   const [callingLead, setCallingLead] = React.useState<Lead | null>(null);
   const [whatsAppLead, setWhatsAppLead] = React.useState<Lead | null>(null);
@@ -534,7 +574,28 @@ function App() {
           </div>
         )}
 
-        {activeTab === "overview" && <Overview summary={data.summary} loading={data.loading} />}
+        {activeTab === "overview" && (
+          <Overview
+            summary={data.summary}
+            loading={data.loading}
+            leads={data.leads}
+            jobs={data.jobs}
+            attempts={data.attempts}
+            followups={data.followups}
+            onOpenActivity={() => setActiveTab("activity")}
+          />
+        )}
+        {activeTab === "activity" && (
+          <LeadActivityDashboard
+            leads={filteredLeads}
+            jobs={data.jobs}
+            attempts={data.attempts}
+            followups={data.followups}
+            syncLogs={data.syncLogs}
+            onCallLead={setCallingLead}
+            onWhatsAppLead={setWhatsAppLead}
+          />
+        )}
         {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={setWhatsAppLead} />}
         {activeTab === "jobs" && <JobsTable jobs={data.jobs} onRefresh={data.load} />}
         {activeTab === "attempts" && <AttemptsTable attempts={data.attempts} />}
@@ -547,7 +608,23 @@ function App() {
   );
 }
 
-function Overview({ summary, loading }: { summary: Summary | null; loading: boolean }) {
+function Overview({
+  summary,
+  loading,
+  leads,
+  jobs,
+  attempts,
+  followups,
+  onOpenActivity
+}: {
+  summary: Summary | null;
+  loading: boolean;
+  leads: Lead[];
+  jobs: CallJob[];
+  attempts: CallAttempt[];
+  followups: Followup[];
+  onOpenActivity: () => void;
+}) {
   const cards: Array<[string, string | number | undefined, IconComponent]> = [
     ["Total Leads", summary?.total_leads, Users],
     ["Calls Made", summary?.calls_made, Phone],
@@ -558,6 +635,10 @@ function Overview({ summary, loading }: { summary: Summary | null; loading: bool
     ["CRM Failures", summary?.crm_failures, AlertCircle],
     ["Pending Jobs", summary?.pending_jobs, CalendarClock]
   ];
+  const pendingCallbacks = jobs
+    .filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested")
+    .slice(0, 5);
+  const latestAttempts = byLatestDate(attempts).slice(0, 5);
 
   return (
     <section className="content">
@@ -573,24 +654,189 @@ function Overview({ summary, loading }: { summary: Summary | null; loading: bool
 
       <div className="split">
         <div className="panel">
-          <h3>Call Pipeline</h3>
+          <div className="panelTitleRow">
+            <h3>Callback Watch</h3>
+            <button className="textButton" onClick={onOpenActivity}>
+              <span>Open activity</span>
+              <ArrowRight size={14} />
+            </button>
+          </div>
           <div className="pipeline">
             <PipelineItem label="Pending" value={summary?.pending_jobs ?? 0} tone="wait" />
             <PipelineItem label="In Progress" value={summary?.in_progress_jobs ?? 0} tone="info" />
             <PipelineItem label="Completed" value={summary?.completed_jobs ?? 0} tone="good" />
             <PipelineItem label="Failed" value={summary?.failed_jobs ?? 0} tone="bad" />
           </div>
+          <div className="miniList">
+            {pendingCallbacks.length === 0 ? (
+              <div className="emptyCard">No pending callback jobs right now</div>
+            ) : pendingCallbacks.map((job) => (
+              <div className={isDueSoon(job.scheduled_at) ? "miniRow urgent" : "miniRow"} key={job.id}>
+                <div>
+                  <strong>{job.lead_name || "Unknown lead"}</strong>
+                  <span>{job.phone || "-"}</span>
+                </div>
+                <div className="miniMeta">
+                  <Badge value={job.status} />
+                  <span>{fmtDate(job.scheduled_at)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="panel">
-          <h3>Service Links</h3>
-          <div className="links">
-            <a href="https://crm.zoho.com" target="_blank" rel="noreferrer">Zoho CRM <ExternalLink size={14} /></a>
-            <a href="https://dashboard.retellai.com" target="_blank" rel="noreferrer">Retell Dashboard <ExternalLink size={14} /></a>
-            <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">Supabase <ExternalLink size={14} /></a>
-            <a href="/docs" target="_blank" rel="noreferrer">FastAPI Docs <ExternalLink size={14} /></a>
+          <h3>Latest Call Notes</h3>
+          <div className="miniList">
+            {latestAttempts.length === 0 ? (
+              <div className="emptyCard">No call summaries yet</div>
+            ) : latestAttempts.map((attempt) => (
+              <div className="notePreview" key={attempt.id}>
+                <div className="notePreviewHead">
+                  <strong>{attempt.lead_name || "Unknown lead"}</strong>
+                  <Badge value={attempt.call_outcome || attempt.status} />
+                </div>
+                <p>{attempt.summary || attempt.caller_requirement || "No summary captured yet."}</p>
+                <span>{fmtDate(attempt.started_at)}</span>
+              </div>
+            ))}
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function LeadActivityDashboard({
+  leads,
+  jobs,
+  attempts,
+  followups,
+  syncLogs,
+  onCallLead,
+  onWhatsAppLead
+}: {
+  leads: Lead[];
+  jobs: CallJob[];
+  attempts: CallAttempt[];
+  followups: Followup[];
+  syncLogs: CrmSyncLog[];
+  onCallLead: (lead: Lead) => void;
+  onWhatsAppLead: (lead: Lead) => void;
+}) {
+  const pendingCallbacks = jobs.filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested");
+  const dueSoon = pendingCallbacks.filter((job) => isDueSoon(job.scheduled_at));
+  const recentFailures = syncLogs.filter((log) => !log.success).slice(0, 5);
+  const rows = leads.map((lead) => {
+    const leadJobs = jobs.filter((job) => job.lead_id === lead.id || job.phone === lead.phone);
+    const leadAttempts = byLatestDate(attempts.filter((attempt) => attempt.lead_id === lead.id || attempt.phone === lead.phone));
+    const leadFollowups = followups.filter((followup) => followup.lead_id === lead.id);
+    const latestAttempt = leadAttempts[0];
+    const nextCallback = leadJobs
+      .filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested")
+      .sort((a, b) => new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime())[0];
+    return { lead, leadJobs, leadAttempts, leadFollowups, latestAttempt, nextCallback };
+  });
+
+  return (
+    <section className="content">
+      <div className="opsGrid">
+        <div className="opsStat">
+          <span>Pending callbacks</span>
+          <strong>{pendingCallbacks.length}</strong>
+        </div>
+        <div className="opsStat urgentStat">
+          <span>Due within 1 hour</span>
+          <strong>{dueSoon.length}</strong>
+        </div>
+        <div className="opsStat">
+          <span>Calls with notes</span>
+          <strong>{attempts.filter((attempt) => attempt.summary || attempt.caller_requirement).length}</strong>
+        </div>
+        <div className="opsStat">
+          <span>Sync failures</span>
+          <strong>{recentFailures.length}</strong>
+        </div>
+      </div>
+
+      <div className="activityList">
+        {rows.length === 0 && <div className="emptyCard">No matching leads</div>}
+        {rows.map(({ lead, leadAttempts, leadFollowups, latestAttempt, nextCallback }) => (
+          <article className="leadCard" key={lead.id}>
+            <div className="leadCardTop">
+              <div>
+                <h3>{lead.name}</h3>
+                <p>{lead.phone} {lead.city ? `• ${lead.city}` : ""}</p>
+              </div>
+              <div className="leadActions">
+                <button className="callLeadBtn" onClick={() => onCallLead(lead)} title={`Call ${lead.name}`}>
+                  <Phone size={13} />
+                  <span>Call</span>
+                </button>
+                <button className="callLeadBtn whatsappAction" onClick={() => onWhatsAppLead(lead)} title={`WhatsApp ${lead.name}`}>
+                  <MessageCircle size={13} />
+                  <span>Chat</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="leadInsightGrid">
+              <div className={nextCallback ? "insightBox callbackBox" : "insightBox"}>
+                <span>Next callback</span>
+                <strong>{nextCallback ? fmtDate(nextCallback.scheduled_at) : "None scheduled"}</strong>
+                <small>{nextCallback?.trigger_reason || lead.latest_callback_time || "-"}</small>
+              </div>
+              <div className="insightBox">
+                <span>Latest outcome</span>
+                <strong>{latestAttempt?.call_outcome || latestAttempt?.status || lead.latest_attempt_status || "-"}</strong>
+                <small>{latestAttempt?.direction || lead.latest_interest_level || "-"}</small>
+              </div>
+              <div className="insightBox">
+                <span>Intent</span>
+                <strong>{latestAttempt?.interest_level || lead.latest_interest_level || "-"}</strong>
+                <small>{lead.campaign || lead.source || "-"}</small>
+              </div>
+              <div className="insightBox">
+                <span>Follow-up task</span>
+                <strong>{leadFollowups[0] ? fmtDate(leadFollowups[0].scheduled_at) : "None"}</strong>
+                <small>{leadFollowups[0]?.status || "-"}</small>
+              </div>
+            </div>
+
+            <div className="notesBlock">
+              <span>Latest notes / summary</span>
+              <p>{latestAttempt?.summary || latestAttempt?.caller_requirement || lead.latest_summary || "No notes captured yet."}</p>
+            </div>
+
+            <div className="callTimeline">
+              {leadAttempts.length === 0 ? (
+                <div className="emptyCard compact">No call history yet</div>
+              ) : leadAttempts.slice(0, 4).map((attempt) => (
+                <div className="timelineItem" key={attempt.id}>
+                  <div className="timelineDot" />
+                  <div>
+                    <div className="timelineHead">
+                      <strong>{fmtDate(attempt.started_at)}</strong>
+                      <Badge value={attempt.call_outcome || attempt.status} />
+                    </div>
+                    <p>{attempt.summary || attempt.caller_requirement || "No summary captured."}</p>
+                    <div className="timelineMeta">
+                      <span>{attempt.direction || "-"} call</span>
+                      <span>{attempt.duration_seconds ? `${attempt.duration_seconds}s` : "duration -"}</span>
+                      {attempt.callback_required && <span>callback: {String(attempt.callback_time || "requested")}</span>}
+                      {attempt.follow_up_required && <span>follow-up: {String(attempt.follow_up_time || "requested")}</span>}
+                      {attempt.recording_url && (
+                        <a href={attempt.recording_url} target="_blank" rel="noreferrer">
+                          Recording <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   );
@@ -636,12 +882,13 @@ function LeadsTable({
           <th>Language</th>
           <th>Call Status</th>
           <th>Intent</th>
+          <th>Callback / Notes</th>
           <th>Created</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>
-        {leads.length === 0 && <EmptyRow colSpan={8} />}
+        {leads.length === 0 && <EmptyRow colSpan={9} />}
         {leads.map((lead) => (
           <tr key={lead.id}>
             <td>
@@ -653,6 +900,9 @@ function LeadsTable({
             <td>{lead.language_preference}</td>
             <td><Badge value={lead.latest_call_job_status || lead.latest_attempt_status} /></td>
             <td><Badge value={lead.latest_interest_level} /></td>
+            <td className="summaryCell">
+              {lead.latest_callback_required ? `Callback: ${lead.latest_callback_time || "requested"}` : lead.latest_summary || "-"}
+            </td>
             <td>{fmtDate(lead.created_at)}</td>
             <td>
               <div style={{ display: "flex", gap: 6 }}>
@@ -705,13 +955,14 @@ function JobsTable({ jobs, onRefresh }: { jobs: CallJob[]; onRefresh: () => void
           <th>Lead</th>
           <th>Phone</th>
           <th>Status</th>
+          <th>Reason</th>
           <th>Scheduled</th>
           <th>Retries</th>
           <th>Action</th>
         </tr>
       </thead>
       <tbody>
-        {jobs.length === 0 && <EmptyRow colSpan={6} />}
+        {jobs.length === 0 && <EmptyRow colSpan={7} />}
         {jobs.map((job) => (
           <tr key={job.id}>
             <td>
@@ -720,6 +971,7 @@ function JobsTable({ jobs, onRefresh }: { jobs: CallJob[]; onRefresh: () => void
             </td>
             <td>{job.phone || "-"}</td>
             <td><Badge value={job.status} /></td>
+            <td>{job.trigger_reason || "-"}</td>
             <td>{fmtDate(job.scheduled_at)}</td>
             <td>{job.retry_count}/{job.max_retries}</td>
             <td>
@@ -748,13 +1000,14 @@ function AttemptsTable({ attempts }: { attempts: CallAttempt[] }) {
           <th>Lead</th>
           <th>Status</th>
           <th>Intent</th>
+          <th>Callback</th>
           <th>Duration</th>
           <th>Summary</th>
           <th>Recording</th>
         </tr>
       </thead>
       <tbody>
-        {attempts.length === 0 && <EmptyRow colSpan={6} />}
+        {attempts.length === 0 && <EmptyRow colSpan={7} />}
         {attempts.map((attempt) => (
           <tr key={attempt.id}>
             <td>
@@ -763,6 +1016,7 @@ function AttemptsTable({ attempts }: { attempts: CallAttempt[] }) {
             </td>
             <td><Badge value={attempt.status} /></td>
             <td><Badge value={attempt.interest_level} /></td>
+            <td>{attempt.callback_required ? String(attempt.callback_time || "requested") : "-"}</td>
             <td>{attempt.duration_seconds ? `${attempt.duration_seconds}s` : "-"}</td>
             <td className="summaryCell">{attempt.summary || "-"}</td>
             <td>

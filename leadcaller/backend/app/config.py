@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     ZOHO_API_DOMAIN: str = "https://www.zohoapis.com"
     ZOHO_ACCOUNTS_DOMAIN: str = "https://accounts.zoho.com"
 
+    META_APP_ID: str
+    META_APP_SECRET: str
+    META_VERIFY_TOKEN: str
+    META_PAGE_ID: str = ""
+    META_PAGE_ACCESS_TOKEN: str = ""
+
     RETELL_API_KEY: str
     RETELL_AGENT_ID: str
     RETELL_AGENT_VERSION: int | None = None

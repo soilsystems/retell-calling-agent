@@ -117,11 +117,16 @@ def test_outside_business_hours_schedules_next_slot():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_call_job_not_created(client, zoho_signature, monkeypatch):
+async def test_new_lead_event_schedules_even_when_lead_exists(client, zoho_signature, monkeypatch):
     async def fake_schedule(payload, webhook_event, db, now=None):
-        return "call already scheduled", object()
+        class Job:
+            id = "22222222-2222-2222-2222-222222222222"
+            scheduled_at = datetime.fromisoformat("2026-05-14T04:30:00+00:00")
+
+        return "scheduled", Job()
 
     monkeypatch.setattr("app.routers.webhooks.schedule_call_for_lead", fake_schedule)
+    monkeypatch.setattr("app.routers.webhooks.trigger_retell_call", lambda call_job_id: None)
     from app.database import get_db
     from app.main import app
 
@@ -130,4 +135,4 @@ async def test_duplicate_call_job_not_created(client, zoho_signature, monkeypatc
     response = await client.post("/webhooks/zoho/new-lead", content=body, headers={"X-Zoho-Webhook-Token": zoho_signature(body)})
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json()["status"] == "call already scheduled"
+    assert response.json()["status"] == "scheduled"

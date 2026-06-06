@@ -1,5 +1,4 @@
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import Select, select
@@ -8,12 +7,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CallJob, CallJobStatus, Lead, WebhookEvent
 from app.schemas.lead_schema import ZohoLeadWebhook
-from app.utils.business_hours import is_business_hours, next_business_slot
-
 logger = logging.getLogger(__name__)
 
 
 async def upsert_lead(payload: ZohoLeadWebhook, db: AsyncSession) -> Lead:
+    existing_by_phone = (
+        await db.execute(select(Lead).where(Lead.phone == payload.phone).limit(1))
+    ).scalar_one_or_none()
+    if existing_by_phone:
+        if (
+            not payload.zoho_lead_id.startswith("meta:")
+            or existing_by_phone.zoho_lead_id.startswith("meta:")
+        ):
+            existing_by_phone.zoho_lead_id = payload.zoho_lead_id
+        existing_by_phone.name = payload.name
+        existing_by_phone.email = payload.email
+        existing_by_phone.city = payload.city
+        existing_by_phone.language_preference = payload.language_preference
+        existing_by_phone.source = payload.source
+        existing_by_phone.campaign = payload.campaign
+        existing_by_phone.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+        return existing_by_phone
+
     stmt = (
         insert(Lead)
         .values(
@@ -31,8 +47,11 @@ async def upsert_lead(payload: ZohoLeadWebhook, db: AsyncSession) -> Lead:
             set_={
                 "name": payload.name,
                 "phone": payload.phone,
+                "email": payload.email,
                 "city": payload.city,
                 "language_preference": payload.language_preference,
+                "source": payload.source,
+                "campaign": payload.campaign,
                 "updated_at": datetime.now(timezone.utc),
             },
         )
@@ -42,7 +61,7 @@ async def upsert_lead(payload: ZohoLeadWebhook, db: AsyncSession) -> Lead:
     return result.scalar_one()
 
 
-async def find_active_call_job(lead_id: uuid.UUID, db: AsyncSession) -> CallJob | None:
+async def find_active_call_job(lead_id, db: AsyncSession) -> CallJob | None:
     stmt: Select[tuple[CallJob]] = select(CallJob).where(
         CallJob.lead_id == lead_id,
         CallJob.status.in_([CallJobStatus.pending, CallJobStatus.in_progress]),
@@ -59,18 +78,10 @@ async def schedule_call_for_lead(
     now = now or datetime.now(timezone.utc)
     lead = await upsert_lead(payload, db)
 
-    existing_job = await find_active_call_job(lead.id, db)
-    if existing_job:
-        webhook_event.processed = True
-        await db.commit()
-        logger.info("Call already scheduled for lead_id=%s", lead.id)
-        return "call already scheduled", existing_job
-
-    scheduled_at = now if is_business_hours(now) else next_business_slot(now)
     call_job = CallJob(
         lead_id=lead.id,
         status=CallJobStatus.pending,
-        scheduled_at=scheduled_at,
+        scheduled_at=now,
         trigger_reason="new_lead",
     )
     db.add(call_job)

@@ -39,6 +39,10 @@ def _ensure_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _should_ignore_business_hours(call_job: CallJob) -> bool:
+    return getattr(call_job, "trigger_reason", None) in {"new_lead", "new_lead_simulated"}
+
+
 def _phone_suffix(value: str | None) -> str | None:
     if not value:
         return None
@@ -245,7 +249,7 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
         logger.info("Retell trigger deferred for call_job_id=%s scheduled_at=%s", call_job.id, scheduled_at)
         return
 
-    if not is_business_hours(now):
+    if not _should_ignore_business_hours(call_job) and not is_business_hours(now):
         call_job.scheduled_at = next_business_slot(now)
         await db.commit()
         logger.info("Retell trigger moved to next business slot for call_job_id=%s", call_job.id)

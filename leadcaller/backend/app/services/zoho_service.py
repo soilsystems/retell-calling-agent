@@ -279,6 +279,88 @@ async def create_zoho_lead_for_inbound(phone: str, db: AsyncSession) -> str:
     return str(zoho_lead_id)
 
 
+async def create_lead_in_zoho(lead_data: dict[str, Any], db: AsyncSession) -> str:
+    settings = get_settings()
+    access_token = await get_zoho_access_token(db)
+    full_name = lead_data.get("name") or "Unknown"
+    name_parts = full_name.strip().split(" ", 1)
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else full_name
+    description_parts = [
+        f"Source: {lead_data.get('source', 'Meta Ads')}",
+        f"Campaign: {lead_data.get('campaign', '')}",
+    ]
+    if lead_data.get("meta_form_id"):
+        description_parts.append(f"Meta Form ID: {lead_data['meta_form_id']}")
+    if lead_data.get("meta_ad_id"):
+        description_parts.append(f"Meta Ad ID: {lead_data['meta_ad_id']}")
+    if lead_data.get("meta_ad_name"):
+        description_parts.append(f"Meta Ad Name: {lead_data['meta_ad_name']}")
+    if lead_data.get("meta_campaign_id"):
+        description_parts.append(f"Meta Campaign ID: {lead_data['meta_campaign_id']}")
+    if lead_data.get("meta_campaign_name"):
+        description_parts.append(f"Meta Campaign Name: {lead_data['meta_campaign_name']}")
+
+    lead_fields = {
+        "First_Name": first_name,
+        "Last_Name": last_name,
+        "Email": lead_data.get("email", ""),
+        "City": lead_data.get("city", ""),
+        "Lead_Source": "Meta Ads",
+        "Campaign_Source__c": lead_data.get("campaign", ""),
+        "Lead_Status": "New",
+        "Description": " | ".join(description_parts),
+    }
+    phone = lead_data.get("phone") or ""
+    if phone:
+        lead_fields["Phone"] = phone
+        lead_fields["Mobile"] = phone
+
+    payload = {"data": [lead_fields]}
+
+    try:
+        response = await _request_with_retry(
+            "POST",
+            f"{settings.ZOHO_API_DOMAIN}/crm/v6/Leads",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {access_token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        logger.info("[Zoho] create_lead response: %s %s", response.status_code, response.text)
+        if response.status_code in [200, 201]:
+            zoho_lead_id = response.json()["data"][0]["details"]["id"]
+            db.add(CrmSyncLog(lead_id=None, operation="create_lead", success=True))
+            await db.commit()
+            logger.info("[Zoho] Lead created successfully: %s", zoho_lead_id)
+            return str(zoho_lead_id)
+
+        db.add(
+            CrmSyncLog(
+                lead_id=None,
+                operation="create_lead",
+                success=False,
+                error_message=response.text,
+            )
+        )
+        await db.commit()
+        logger.error("[Zoho] Lead creation failed: %s", response.text)
+        raise RuntimeError(f"Zoho lead creation failed: {response.text}")
+    except Exception as exc:
+        if not isinstance(exc, RuntimeError):
+            db.add(
+                CrmSyncLog(
+                    lead_id=None,
+                    operation="create_lead",
+                    success=False,
+                    error_message=str(exc),
+                )
+            )
+            await db.commit()
+        raise
+
+
 async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAttempt | None:
     result = await db.execute(
         select(CallAttempt)

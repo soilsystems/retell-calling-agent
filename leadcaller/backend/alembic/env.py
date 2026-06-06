@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import uuid
 
 from alembic import context
 from sqlalchemy import pool
@@ -39,6 +40,10 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={
+            "statement_cache_size": 0,
+            "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
+        },
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

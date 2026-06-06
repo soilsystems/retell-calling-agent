@@ -75,9 +75,6 @@ async def zoho_new_lead(
         await db.refresh(webhook_event)
 
     message, call_job = await schedule_call_for_lead(payload, webhook_event, db, now=received_at)
-    if message == "call already scheduled":
-        return JSONResponse(status_code=200, content={"status": "call already scheduled"})
-
     background_tasks.add_task(trigger_retell_call, call_job.id)
     return JSONResponse(
         status_code=200,

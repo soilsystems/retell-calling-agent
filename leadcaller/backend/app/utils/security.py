@@ -1,9 +1,12 @@
 import hashlib
 import hmac
+import logging
 import re
 from datetime import datetime, timezone
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _verify_hmac(payload: bytes, header_value: str | None, secret: str) -> bool:
@@ -40,6 +43,33 @@ def verify_retell_signature(payload: bytes, signature_header: str | None) -> boo
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected, digest)
+
+
+def verify_meta_signature(payload: bytes, signature_header: str | None) -> bool:
+    settings = get_settings()
+    if settings.ENVIRONMENT == "dev" and not signature_header:
+        logger.warning("[Meta] No signature header - bypassing in dev mode")
+        return True
+
+    if not settings.META_APP_SECRET:
+        logger.warning("[Meta] META_APP_SECRET not configured")
+        if settings.ENVIRONMENT != "prod":
+            return True
+        return False
+
+    if not signature_header or not signature_header.startswith("sha256="):
+        logger.warning("[Meta] Bad signature format: %s", (signature_header or "")[:20])
+        return False
+
+    expected = "sha256=" + hmac.new(
+        settings.META_APP_SECRET.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+    result = hmac.compare_digest(expected, signature_header)
+    if not result:
+        logger.warning("[Meta] Signature mismatch")
+    return result
 
 
 def generate_idempotency_key(zoho_lead_id: str, timestamp: datetime) -> str:

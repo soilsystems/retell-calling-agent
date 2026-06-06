@@ -31,6 +31,11 @@ os.environ.setdefault("WATI_API_TOKEN", "wati-token")
 os.environ.setdefault("BASE_URL", "https://leadcaller.example.com")
 os.environ.setdefault("ENVIRONMENT", "dev")
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
+os.environ.setdefault("META_APP_ID", "meta-app-id")
+os.environ.setdefault("META_APP_SECRET", "meta-app-secret")
+os.environ.setdefault("META_VERIFY_TOKEN", "soilsystems_meta_verify_2026")
+os.environ.setdefault("META_PAGE_ID", "page-id")
+os.environ.setdefault("META_PAGE_ACCESS_TOKEN", "meta-page-token")
 
 from app.main import app  # noqa: E402
 

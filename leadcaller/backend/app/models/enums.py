@@ -33,6 +33,7 @@ class CallDirection(StrEnum):
 class WebhookSource(StrEnum):
     zoho = "zoho"
     retell = "retell"
+    meta = "meta"
 
 
 class FollowupStatus(StrEnum):

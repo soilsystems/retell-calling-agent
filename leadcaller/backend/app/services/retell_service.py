@@ -28,6 +28,14 @@ from app.utils.business_hours import get_next_business_day_at_10am, is_business_
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_ADAPTATION_INSTRUCTION = (
+    "Do not force a fixed language. Start naturally in simple English unless the caller "
+    "starts in another language. Detect the caller's spoken language from their replies "
+    "and continue in that language. If the caller explicitly asks to speak in English, "
+    "Hindi, Kannada, or another language, immediately switch to that language. If they "
+    "mix languages, mirror their mix while keeping the conversation clear."
+)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -268,14 +276,17 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
         "Outbound callback/sales call. Start by confirming the lead is available, "
         "then remind them they had enquired about Soil Systems land investment. "
         "Do not thank them for calling. Ask whether they want details, a brochure, "
-        "or a site visit."
+        "or a site visit. "
+        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
     )
     variables = {
         "lead_name": clean_name,
         "customer_name": clean_name,
         "name": clean_name,
         "agent_name": "Vikas",
-        "language": call_job.lead.language_preference.value,
+        "language": "auto",
+        "language_preference": "auto",
+        "language_instruction": LANGUAGE_ADAPTATION_INSTRUCTION,
         "city": call_job.lead.city or "",
         "campaign": call_job.lead.campaign or "",
         "zoho_lead_id": call_job.lead.zoho_lead_id,

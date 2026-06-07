@@ -27,7 +27,13 @@ from app.config import get_settings
 from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
-from app.services.retell_service import process_retell_completion, retell_event_key, schedule_retry, trigger_retell_call
+from app.services.retell_service import (
+    LANGUAGE_ADAPTATION_INSTRUCTION,
+    process_retell_completion,
+    retell_event_key,
+    schedule_retry,
+    trigger_retell_call,
+)
 from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
@@ -381,18 +387,21 @@ async def retell_inbound(
         "Outbound callback/sales call. Start by confirming the lead is available, "
         "then remind them they had enquired about Soil Systems land investment. "
         "Do not thank them for calling. Ask whether they want details, a brochure, "
-        "or a site visit."
+        "or a site visit. "
+        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
     )
     inbound_script = (
         "Inbound support/enquiry call. The lead called us. Thank them for calling, "
         "ask how you can help, then answer questions and qualify their interest. "
-        "Do not say you are calling them about an enquiry."
+        "Do not say you are calling them about an enquiry. "
+        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
     )
     unknown_inbound_script = (
         "New inbound caller. Their name is not in Zoho yet. Thank them for calling Soil Systems, "
         "introduce yourself as Vikas, ask for their name, city, and what details they need about "
         "the land project. Confirm their phone number if needed. Save the collected details in "
-        "structured data using caller_name, caller_city, caller_email if shared, and caller_requirement."
+        "structured data using caller_name, caller_city, caller_email if shared, and caller_requirement. "
+        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
     )
     call_script = (
         outbound_bridge_script
@@ -406,7 +415,9 @@ async def retell_inbound(
         "name": clean_name,
         "agent_name": "Vikas",
         "phone": lead.phone,
-        "language": lead.language_preference.value,
+        "language": "auto",
+        "language_preference": "auto",
+        "language_instruction": LANGUAGE_ADAPTATION_INSTRUCTION,
         "city": lead.city or "",
         "campaign": lead.campaign or "",
         "zoho_lead_id": lead.zoho_lead_id,

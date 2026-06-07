@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.models import CallJob, CallJobStatus
+from app.models import CallJob, CallJobStatus, LanguagePreference
 from app.services import retell_service
 from app.utils.business_hours import get_next_business_day_at_10am, next_business_slot
 
@@ -174,6 +174,81 @@ async def test_outside_business_hours_schedules_next_slot(monkeypatch):
 
     assert job.scheduled_at == next_slot
     assert job.status == CallJobStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_outbound_retell_call_uses_auto_language_instruction(monkeypatch):
+    now = datetime(2026, 6, 6, 10, 0, tzinfo=timezone.utc)
+    job = SimpleNamespace(
+        id=uuid4(),
+        status=CallJobStatus.pending,
+        scheduled_at=now,
+        trigger_reason="new_lead",
+        attempts=[],
+        lead=SimpleNamespace(
+            id=uuid4(),
+            name="Ravi Chandra",
+            phone="+918746905010",
+            language_preference=LanguagePreference.kannada,
+            city="Bengaluru",
+            campaign="June Campaign",
+            zoho_lead_id="zoho-1",
+        ),
+    )
+    added = []
+    captured = {}
+
+    class ResultOne:
+        def scalar_one_or_none(self):
+            return job
+
+    class Db:
+        async def execute(self, stmt):
+            return ResultOne()
+
+        async def scalar(self, stmt):
+            return 0
+
+        def add(self, row):
+            added.append(row)
+
+        async def commit(self):
+            return None
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"call_id": "retell-call-1"}
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return Response()
+
+    monkeypatch.setattr(retell_service, "_utcnow", lambda: now)
+    monkeypatch.setattr(retell_service, "is_business_hours", lambda dt: True)
+    monkeypatch.setattr(retell_service.httpx, "AsyncClient", Client)
+
+    await retell_service.trigger_retell_call(job.id, Db())
+
+    variables = captured["body"]["retell_llm_dynamic_variables"]
+    assert variables["language"] == "auto"
+    assert variables["language_preference"] == "auto"
+    assert "Do not force a fixed language" in variables["language_instruction"]
+    assert "Do not force a fixed language" in captured["body"]["agent_override"]["retell_llm"]["general_prompt"]
+    assert added[0].retell_call_id == "retell-call-1"
 
 
 def test_sunday_schedules_monday_10am():

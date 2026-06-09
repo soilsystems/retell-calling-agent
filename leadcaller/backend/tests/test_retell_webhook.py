@@ -154,28 +154,11 @@ async def test_max_retries_cancels_job():
 
 
 @pytest.mark.asyncio
-async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
-    lead = Lead(
-        id=uuid4(),
-        zoho_lead_id="zoho-1",
-        name="Ravi Chandra",
-        phone="+918746905010",
-        city="Bengaluru",
-        campaign="May Campaign",
-        language_preference=LanguagePreference.english,
-    )
-
-    class Scalars:
-        def first(self):
-            return lead
-
-    class Result:
-        def scalars(self):
-            return Scalars()
+async def test_retell_inbound_returns_instant_response(client):
+    """Inbound calls respond instantly with no DB lookup — eliminates 'please wait' hold message."""
 
     class Db:
-        async def execute(self, stmt):
-            return Result()
+        pass
 
     async def fake_get_db():
         yield Db()
@@ -198,16 +181,64 @@ async def test_retell_inbound_returns_call_inbound_dynamic_variables(client):
 
     assert response.status_code == 200
     body = response.json()
-    variables = body["call_inbound"]["dynamic_variables"]
-    assert body["call_inbound"]["override_agent_version"] == 3
-    assert variables["lead_name"] == "Ravi Chandra"
-    assert variables["customer_name"] == "Ravi Chandra"
+    ci = body["call_inbound"]
+    variables = ci["retell_llm_dynamic_variables"]
+    assert "override_agent_version" not in ci
     assert variables["phone"] == "+918746905010"
     assert variables["language"] == "auto"
     assert variables["language_preference"] == "auto"
+    assert variables["call_direction"] == "inbound"
+    assert variables["inbound_call"] == "true"
     assert "explicitly asks to speak" in variables["language_instruction"]
-    assert "Ravi Chandra" in body["call_inbound"]["agent_override"]["retell_llm"]["begin_message"]
-    assert "Do not force a fixed language" in body["call_inbound"]["agent_override"]["retell_llm"]["general_prompt"]
+    assert "Vikas" in ci["agent_override"]["retell_llm"]["begin_message"]
+    assert "general_prompt" not in ci["agent_override"]["retell_llm"]
+
+
+@pytest.mark.asyncio
+async def test_retell_inbound_uses_cached_outbound_bridge(client, monkeypatch):
+    """Outbound bridge calls use the in-memory cache — no DB lookup needed."""
+    from app.services.exotel_service import cache_outbound_bridge
+
+    lead = Lead(
+        id=uuid4(),
+        zoho_lead_id="zoho-1",
+        name="Ravi Chandra",
+        phone="+918746905010",
+        city="Bengaluru",
+        campaign="May Campaign",
+        language_preference=LanguagePreference.english,
+    )
+    cache_outbound_bridge(lead)
+
+    class Db:
+        pass
+
+    async def fake_get_db():
+        yield Db()
+
+    from app.database import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = fake_get_db
+    response = await client.post(
+        "/webhooks/retell/inbound",
+        json={
+            "event": "call_inbound",
+            "call_inbound": {
+                "from_number": "+918047283246",
+                "to_number": "+918046376848",
+            },
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    variables = response.json()["call_inbound"]["retell_llm_dynamic_variables"]
+    assert variables["call_direction"] == "outbound"
+    assert variables["outbound_bridge_call"] == "true"
+    assert variables["inbound_call"] == "false"
+    assert variables["lead_name"] == "Ravi Chandra"
+    assert "Do not thank them for calling" in variables["call_script"]
 
 
 @pytest.mark.asyncio

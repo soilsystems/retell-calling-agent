@@ -34,6 +34,7 @@ from app.services.retell_service import (
     schedule_retry,
     trigger_retell_call,
 )
+from app.services.exotel_service import pop_pending_outbound_bridge
 from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
@@ -140,6 +141,47 @@ async def retell_call_completed(
             background_tasks.add_task(schedule_retry, attempt.call_job_id, attempt.status.value)
 
     return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@router.api_route("/exotel/exoml", methods=["GET", "POST"])
+async def exotel_exoml(request: Request) -> Response:
+    """Dynamic ExoML endpoint called by Exotel when the lead picks up.
+
+    Returns ExoML that dials the Retell SIP number (+918046376848).
+    Retell receives this as an inbound call and, because there is a recent
+    'exotel_ai_bridge' CRM log for the lead, the /retell/inbound handler
+    uses the outbound-bridge script so the AI starts speaking first.
+    """
+    settings = get_settings()
+
+    # Log incoming data for debugging (GET uses query params, POST uses form data)
+    try:
+        if request.method == "GET":
+            payload = dict(request.query_params)
+        else:
+            form = await request.form()
+            payload = dict(form)
+    except Exception:
+        payload = {}
+    lead_phone = (
+        _payload_value(payload, "From", "CallFrom", "from") or ""
+    )
+    logger.info("[ExoML] %s request — lead picked up. Dialling Retell SIP. lead_phone=%s payload=%s",
+                request.method, lead_phone, payload)
+
+    # Dial the Retell SIP number — this uses the proven inbound path.
+    # Retell will call /webhooks/retell/inbound and, seeing a recent outbound
+    # bridge log, will run the AI in outbound mode.
+    retell_sip_number = settings.RETELL_FROM_NUMBER  # +918046376848
+    caller_id = settings.EXOTEL_CALLER_ID or ""       # 08047283246
+
+    exoml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response>"
+        f'<Dial callerId="{caller_id}">{retell_sip_number}</Dial>'
+        "</Response>"
+    )
+    return Response(content=exoml, media_type="application/xml")
 
 
 @router.post("/exotel/status")
@@ -359,28 +401,69 @@ async def retell_inbound(
 
     logger.info("Retell inbound webhook received payload: %s", payload)
     call_inbound = payload.get("call_inbound") or {}
-    candidate_numbers = [
-        payload.get("from_number"),
-        payload.get("to_number"),
-        call_inbound.get("from_number"),
-        call_inbound.get("to_number"),
-    ]
-    lead = await _find_lead_for_retell_inbound(candidate_numbers, db)
-    is_new_inbound_lead = False
-
-    if not lead:
-        caller_phone = payload.get("from_number") or call_inbound.get("from_number")
-        if not caller_phone:
-            logger.info("No caller phone found for Retell inbound payload=%s", payload)
-            return JSONResponse(status_code=200, content={"call_inbound": {}})
-        lead = await _create_unknown_inbound_lead(caller_phone, db)
-        is_new_inbound_lead = True
-        logger.info("Created unknown inbound lead_id=%s phone=%s", lead.id, lead.phone)
-
-    logger.info("Found matching lead for inbound call: name=%s", lead.name)
-    clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
+    custom_sip_headers = call_inbound.get("custom_sip_headers") or payload.get("custom_sip_headers") or {}
     settings = get_settings()
-    is_outbound_bridge = False if is_new_inbound_lead else await _is_recent_exotel_outbound_for_lead(lead, db)
+    exophone = (settings.EXOTEL_CALLER_ID or "").replace("-", "")
+
+    # ── FAST PATH: Outbound bridge via Exotel ──
+    # Only when from_number is our ExoPhone — that means Exotel's connect API
+    # bridged Leg 2 to Retell. Regular inbound calls (from a real caller's phone)
+    # also have Exotel SIP headers but must NOT hit this path.
+    from_number = call_inbound.get("from_number") or payload.get("from_number") or ""
+    from_digits = "".join(c for c in from_number if c.isdigit())
+    is_from_exophone = exophone and from_digits.endswith(exophone[-10:])
+
+    cached_lead = None
+    if is_from_exophone:
+        cached_lead = pop_pending_outbound_bridge()
+
+    if cached_lead:
+        # Outbound bridge — respond instantly with cached lead data
+        clean_name = cached_lead["lead_name"].replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
+        return _build_inbound_response(
+            settings=settings,
+            lead_id=cached_lead["lead_id"],
+            lead_name=clean_name,
+            lead_phone=cached_lead["lead_phone"],
+            city=cached_lead.get("city", ""),
+            campaign=cached_lead.get("campaign", ""),
+            zoho_lead_id=cached_lead.get("zoho_lead_id", ""),
+            is_outbound_bridge=True,
+            is_new_inbound_lead=False,
+        )
+
+    # ── FAST PATH: Regular inbound call ──
+    # Respond INSTANTLY so Retell never plays a "please wait" hold message.
+    # The caller's phone is the only info we need; the AI agent already has the
+    # full Vikas persona. Lead creation happens in the post-call webhook.
+    caller_phone = call_inbound.get("from_number") or payload.get("from_number") or ""
+    logger.info("Inbound call from %s — responding immediately (no DB lookup)", caller_phone)
+    return _build_inbound_response(
+        settings=settings,
+        lead_id="",
+        lead_name="",
+        lead_phone=caller_phone,
+        city="",
+        campaign="",
+        zoho_lead_id=None,
+        is_outbound_bridge=False,
+        is_new_inbound_lead=True,
+    )
+
+
+def _build_inbound_response(
+    *,
+    settings: Any,
+    lead_id: str,
+    lead_name: str,
+    lead_phone: str,
+    city: str,
+    campaign: str,
+    zoho_lead_id: str | None,
+    is_outbound_bridge: bool,
+    is_new_inbound_lead: bool,
+) -> JSONResponse:
+    """Build the Retell inbound webhook response. Pure function — no DB access."""
     call_direction = "outbound" if is_outbound_bridge else "inbound"
 
     outbound_bridge_script = (
@@ -406,21 +489,21 @@ async def retell_inbound(
     call_script = (
         outbound_bridge_script
         if is_outbound_bridge
-        else unknown_inbound_script if is_new_inbound_lead or clean_name.lower() == "unknown" else inbound_script
+        else unknown_inbound_script if is_new_inbound_lead or lead_name.lower() == "unknown" else inbound_script
     )
 
     variables = {
-        "lead_name": clean_name,
-        "customer_name": clean_name,
-        "name": clean_name,
+        "lead_name": lead_name,
+        "customer_name": lead_name,
+        "name": lead_name,
         "agent_name": "Vikas",
-        "phone": lead.phone,
+        "phone": lead_phone,
         "language": "auto",
         "language_preference": "auto",
         "language_instruction": LANGUAGE_ADAPTATION_INSTRUCTION,
-        "city": lead.city or "",
-        "campaign": lead.campaign or "",
-        "zoho_lead_id": lead.zoho_lead_id,
+        "city": city,
+        "campaign": campaign,
+        "zoho_lead_id": zoho_lead_id or "",
         "call_direction": call_direction,
         "inbound_call": "false" if is_outbound_bridge else "true",
         "outbound_bridge_call": "true" if is_outbound_bridge else "false",
@@ -431,14 +514,14 @@ async def retell_inbound(
             "You placed this outbound callback call to the lead."
             if is_outbound_bridge
             else "This is a new inbound caller; collect their name and enquiry details."
-            if is_new_inbound_lead or clean_name.lower() == "unknown"
+            if is_new_inbound_lead or lead_name.lower() == "unknown"
             else "The lead called Soil Systems inbound."
         ),
-        "caller_known": "false" if is_new_inbound_lead or clean_name.lower() == "unknown" else "true",
+        "caller_known": "false" if is_new_inbound_lead or lead_name.lower() == "unknown" else "true",
     }
     begin_message = (
         (
-            f"Hello, am I speaking with {clean_name}? "
+            f"Hello, am I speaking with {lead_name}? "
             "This is Vikas calling from Soil Systems about your land investment enquiry."
         )
         if is_outbound_bridge
@@ -446,43 +529,35 @@ async def retell_inbound(
             "Hi, thank you for calling Soil Systems. This is Vikas. "
             "May I know your name and what details you are looking for today?"
         )
-        if is_new_inbound_lead or clean_name.lower() == "unknown"
+        if is_new_inbound_lead or lead_name.lower() == "unknown"
         else (
-            f"Hi {clean_name}, thank you for calling Soil Systems. "
+            f"Hi {lead_name}, thank you for calling Soil Systems. "
             "This is Vikas. How can I help you today?"
         )
     )
     logger.info(
         "Retell inbound answer for lead_id=%s using call_direction=%s begin_message=%s",
-        lead.id,
+        lead_id,
         call_direction,
         begin_message,
     )
 
-    call_inbound_response = {
+    call_inbound_response: dict[str, Any] = {
         "override_agent_id": settings.RETELL_AGENT_ID,
-        "dynamic_variables": variables,
         "retell_llm_dynamic_variables": variables,
         "agent_override": {
             "retell_llm": {
                 "begin_message": begin_message,
-                "general_prompt": call_script,
-            },
-            "conversation_flow": {
-                "begin_message": begin_message,
-                "global_prompt": call_script,
             },
         },
         "metadata": {
-            "lead_id": str(lead.id),
-            "zoho_lead_id": lead.zoho_lead_id,
+            "lead_id": lead_id,
+            "zoho_lead_id": zoho_lead_id or "",
             "source": "leadcaller_retell_inbound",
             "call_direction": call_direction,
             "new_inbound_lead": is_new_inbound_lead,
         },
     }
-    if settings.RETELL_AGENT_VERSION is not None:
-        call_inbound_response["override_agent_version"] = settings.RETELL_AGENT_VERSION
 
     return JSONResponse(
         status_code=200,
@@ -490,7 +565,15 @@ async def retell_inbound(
     )
 
 
-async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db: AsyncSession) -> Lead | None:
+async def _find_lead_for_retell_inbound(
+    candidate_numbers: list[str | None],
+    db: AsyncSession,
+    exotel_call_sid: str | None = None,
+) -> Lead | None:
+    exotel_lead = await _find_recent_exotel_lead(db, exotel_call_sid=exotel_call_sid)
+    if exotel_lead:
+        return exotel_lead
+
     searched_phone_number = False
     for raw_number in candidate_numbers:
         if not raw_number:
@@ -507,18 +590,7 @@ async def _find_lead_for_retell_inbound(candidate_numbers: list[str | None], db:
         if lead:
             return lead
 
-    if searched_phone_number:
-        return None
-
-    result = await db.execute(
-        select(CrmSyncLog)
-        .options(selectinload(CrmSyncLog.lead))
-        .where(CrmSyncLog.operation == "exotel_connect_call", CrmSyncLog.success.is_(True))
-        .order_by(desc(CrmSyncLog.synced_at))
-        .limit(1)
-    )
-    latest_exotel_log = result.scalar_one_or_none()
-    return latest_exotel_log.lead if latest_exotel_log else None
+    return None if searched_phone_number else await _find_recent_exotel_lead(db)
 
 
 async def _create_unknown_inbound_lead(caller_phone: str, db: AsyncSession) -> Lead:
@@ -540,17 +612,53 @@ async def _create_unknown_inbound_lead(caller_phone: str, db: AsyncSession) -> L
     return lead
 
 
-async def _is_recent_exotel_outbound_for_lead(lead: Lead, db: AsyncSession) -> bool:
+@router.post("/whatsapp/status")
+async def whatsapp_status_callback(request: Request) -> JSONResponse:
+    """Capture Exotel WhatsApp delivery status callbacks for debugging."""
+    body = await request.json()
+    logger.info("[WhatsApp] Delivery status callback: %s", json.dumps(body, indent=2))
+    return JSONResponse(status_code=200, content={"status": "received"})
+
+
+async def _find_recent_exotel_lead(db: AsyncSession, exotel_call_sid: str | None = None) -> Lead | None:
     window_start = datetime.now(timezone.utc) - timedelta(minutes=5)
-    result = await db.execute(
+    query = (
+        select(CrmSyncLog)
+        .options(selectinload(CrmSyncLog.lead))
+        .where(CrmSyncLog.operation == "exotel_connect_call")
+        .where(CrmSyncLog.success.is_(True))
+        .where(CrmSyncLog.synced_at >= window_start)
+        .order_by(desc(CrmSyncLog.synced_at))
+    )
+    if exotel_call_sid:
+        query = query.where(CrmSyncLog.error_message.contains(str(exotel_call_sid)))
+
+    result = await db.execute(query.limit(1))
+    if not hasattr(result, "scalar_one_or_none"):
+        return None
+
+    latest_exotel_log = result.scalar_one_or_none()
+    return latest_exotel_log.lead if latest_exotel_log else None
+
+
+async def _is_recent_exotel_outbound_for_lead(
+    lead: Lead,
+    db: AsyncSession,
+    exotel_call_sid: str | None = None,
+) -> bool:
+    window_start = datetime.now(timezone.utc) - timedelta(minutes=5)
+    query = (
         select(CrmSyncLog)
         .where(CrmSyncLog.lead_id == lead.id)
         .where(CrmSyncLog.operation == "exotel_connect_call")
         .where(CrmSyncLog.success.is_(True))
         .where(CrmSyncLog.synced_at >= window_start)
         .order_by(desc(CrmSyncLog.synced_at))
-        .limit(1)
     )
+    if exotel_call_sid:
+        query = query.where(CrmSyncLog.error_message.contains(str(exotel_call_sid)))
+
+    result = await db.execute(query.limit(1))
     if not hasattr(result, "scalar_one_or_none"):
         return False
     return result.scalar_one_or_none() is not None

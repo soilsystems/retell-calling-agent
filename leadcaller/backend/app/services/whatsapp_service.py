@@ -27,7 +27,8 @@ def _clean_name(name: str) -> str:
     return name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip() or name.strip()
 
 
-def format_phone_for_exotel_whatsapp(phone: str | None) -> str | None:
+def format_phone_for_whatsapp(phone: str | None) -> str | None:
+    """Normalize phone to E.164 with leading +, e.g. +919137500132"""
     if not phone:
         return None
     digits = "".join(char for char in phone if char.isdigit())
@@ -40,33 +41,19 @@ def format_phone_for_exotel_whatsapp(phone: str | None) -> str | None:
     return phone.strip() if phone.strip().startswith("+") else None
 
 
+# Keep old name as alias so existing callers don't break
+format_phone_for_exotel_whatsapp = format_phone_for_whatsapp
+
+
+def format_meta_phone(phone: str | None) -> str | None:
+    """Return digits-only format required by Meta Cloud API, e.g. 919137500132"""
+    formatted = format_phone_for_whatsapp(phone)
+    return formatted.lstrip("+") if formatted else None
+
+
+# Kept for any legacy references
 def format_wati_phone(phone: str | None) -> str | None:
-    formatted = format_phone_for_exotel_whatsapp(phone)
-    return formatted.replace("+", "") if formatted else None
-
-
-def _whatsapp_from_number() -> str | None:
-    settings = get_settings()
-    raw = (
-        settings.EXOTEL_WHATSAPP_FROM_NUMBER
-        or settings.EXOTEL_WHATSAPP_NUMBER
-        or settings.EXOTEL_WA_PHONE_NUMBER
-    )
-    return format_phone_for_exotel_whatsapp(raw)
-
-
-def _whatsapp_credentials() -> tuple[str, str, str, str]:
-    settings = get_settings()
-    api_key = settings.EXOTEL_WA_API_KEY or settings.EXOTEL_API_KEY or ""
-    api_token = settings.EXOTEL_WA_API_TOKEN or settings.EXOTEL_API_TOKEN or ""
-    account_sid = settings.EXOTEL_WA_ACCOUNT_SID or settings.EXOTEL_ACCOUNT_SID or ""
-    subdomain = settings.EXOTEL_WA_SUBDOMAIN or settings.EXOTEL_SUBDOMAIN or "api.in.exotel.com"
-    return api_key, api_token, account_sid, subdomain
-
-
-def _whatsapp_url() -> str:
-    _, _, account_sid, subdomain = _whatsapp_credentials()
-    return f"https://{subdomain}/v2/accounts/{account_sid}/messages"
+    return format_meta_phone(phone)
 
 
 def _template_name() -> str:
@@ -74,44 +61,37 @@ def _template_name() -> str:
     return settings.EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS or SOIL_SYSTEMS_TEMPLATE
 
 
-def build_exotel_template_payload(
+def _meta_credentials() -> tuple[str, str]:
+    """Return (phone_number_id, access_token) from settings."""
+    settings = get_settings()
+    phone_number_id = settings.META_WA_PHONE_NUMBER_ID or ""
+    access_token = settings.META_WA_ACCESS_TOKEN or ""
+    return phone_number_id, access_token
+
+
+def _meta_url(phone_number_id: str) -> str:
+    return f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+
+
+def build_meta_template_payload(
     *,
-    from_number: str,
     to_number: str,
     template_name: str,
-    parameters: list[dict[str, str]] | None = None,
+    language_code: str = "en",
+    components: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    components: list[dict[str, Any]] = []
-    if parameters:
-        components.append(
-            {
-                "type": "body",
-                "parameters": parameters,
-            }
-        )
-
-    message = {
-        "from": from_number,
+    payload: dict[str, Any] = {
+        "messaging_product": "whatsapp",
         "to": to_number,
-        "content": {
-            "recipient_type": "individual",
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {
-                    "code": "en",
-                    "policy": "deterministic",
-                },
-                "components": components,
-            },
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language_code},
         },
     }
-    return {
-        "custom_data": str(uuid.uuid4()),
-        "whatsapp": {
-            "messages": [message],
-        },
-    }
+    if components:
+        payload["template"]["components"] = components
+    return payload
 
 
 async def _load_attempt(call_attempt_id: uuid.UUID, db: AsyncSession) -> CallAttempt | None:
@@ -163,28 +143,45 @@ async def send_whatsapp(
     parameters: list[dict[str, str]] | None,
     db: AsyncSession | None = None,
 ) -> dict[str, Any]:
-    from_number = _whatsapp_from_number()
-    to_number = format_phone_for_exotel_whatsapp(lead_phone)
-    if not from_number:
-        raise RuntimeError("EXOTEL_WHATSAPP_FROM_NUMBER or EXOTEL_WA_PHONE_NUMBER is not configured")
+    phone_number_id, access_token = _meta_credentials()
+    if not phone_number_id or not access_token:
+        raise RuntimeError(
+            "META_WA_PHONE_NUMBER_ID and META_WA_ACCESS_TOKEN must be set in .env"
+        )
+
+    to_number = format_meta_phone(lead_phone)
     if not to_number:
         raise RuntimeError(f"Invalid lead phone for WhatsApp: {lead_phone}")
 
-    payload = build_exotel_template_payload(
-        from_number=from_number,
+    components: list[dict[str, Any]] = []
+    if parameters:
+        components.append({"type": "body", "parameters": parameters})
+
+    payload = build_meta_template_payload(
         to_number=to_number,
         template_name=template_name,
-        parameters=parameters,
+        components=components or None,
     )
-    api_key, api_token, _, _ = _whatsapp_credentials()
-    logger.info("[WhatsApp] Exotel payload=%s", json.dumps(payload, indent=2))
 
-    async with httpx.AsyncClient(auth=httpx.BasicAuth(api_key, api_token), timeout=15.0) as client:
-        response = await client.post(_whatsapp_url(), json=payload)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
 
-    logger.info("[WhatsApp] Exotel response=%s %s", response.status_code, response.text)
+    logger.info("[WhatsApp] Meta payload=%s", json.dumps(payload, indent=2))
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            _meta_url(phone_number_id),
+            json=payload,
+            headers=headers,
+        )
+
+    logger.info("[WhatsApp] Meta response=%s %s", response.status_code, response.text)
     if response.status_code >= 400:
-        raise RuntimeError(f"Exotel API failed with status {response.status_code}: {_response_body(response)}")
+        raise RuntimeError(
+            f"Meta Cloud API failed with status {response.status_code}: {_response_body(response)}"
+        )
     return _response_body(response)
 
 
@@ -277,24 +274,25 @@ async def send_whatsapp_custom(
     phone: str,
     text: str,
 ) -> dict[str, Any] | None:
-    from_number = _whatsapp_from_number()
-    to_number = format_phone_for_exotel_whatsapp(phone)
-    if not from_number:
-        raise RuntimeError("EXOTEL_WHATSAPP_FROM_NUMBER or EXOTEL_WA_PHONE_NUMBER is not configured")
+    """Send a free-text message via Meta Cloud API (requires an active conversation window)."""
+    phone_number_id, access_token = _meta_credentials()
+    to_number = format_meta_phone(phone)
+    if not phone_number_id or not access_token:
+        raise RuntimeError("META_WA_PHONE_NUMBER_ID and META_WA_ACCESS_TOKEN must be set in .env")
     if not to_number:
         raise RuntimeError(f"Invalid WhatsApp phone: {phone}")
 
     payload = {
-        "from": from_number,
+        "messaging_product": "whatsapp",
         "to": to_number,
-        "content": {
-            "recipient_type": "individual",
-            "type": "text",
-            "text": {"body": text},
-        },
+        "type": "text",
+        "text": {"body": text},
     }
-    api_key, api_token, _, _ = _whatsapp_credentials()
-    async with httpx.AsyncClient(auth=httpx.BasicAuth(api_key, api_token), timeout=15.0) as client:
-        response = await client.post(_whatsapp_url(), json=payload)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(_meta_url(phone_number_id), json=payload, headers=headers)
     response.raise_for_status()
     return _response_body(response)

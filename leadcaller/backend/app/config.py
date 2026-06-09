@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     META_PAGE_ID: str = ""
     META_PAGE_ACCESS_TOKEN: str = ""
 
+    # Meta WhatsApp Cloud API (direct)
+    META_WA_PHONE_NUMBER_ID: str | None = None
+    META_WA_ACCESS_TOKEN: str | None = None
+
     RETELL_API_KEY: str
     RETELL_AGENT_ID: str
     RETELL_AGENT_VERSION: int | None = None

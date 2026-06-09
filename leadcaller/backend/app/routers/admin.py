@@ -20,7 +20,7 @@ from app.models import (
     Lead,
     WebhookEvent,
 )
-from app.services.exotel_service import connect_exotel_call
+from app.services.exotel_service import connect_exotel_call, connect_exotel_call_with_retell_ai
 from app.services.retell_service import trigger_retell_call
 from app.services.zoho_service import sync_recent_zoho_leads
 
@@ -59,6 +59,7 @@ async def _queue_retell_ai_call(lead: Lead, db: AsyncSession, background_tasks: 
         scheduled_at=datetime.now(timezone.utc),
         retry_count=0,
         max_retries=3,
+        trigger_reason="new_lead_simulated",
     )
     db.add(call_job)
     await db.commit()
@@ -330,11 +331,11 @@ async def call_lead(
     if not lead:
         raise HTTPException(status_code=404, detail="lead not found")
 
-    if body.mode == "ai":
-        return await _queue_retell_ai_call(lead, db, background_tasks, body.mode)
-
-    if body.mode in {"exotel", "exotel_app"}:
-        return await connect_exotel_call(lead, db)
+    if body.mode in {"ai", "exotel", "exotel_app"}:
+        # Exotel calls lead (Leg1) → lead picks up → Exotel bridges to Retell SIP (Leg2)
+        # → Retell inbound handler detects outbound bridge → AI speaks first.
+        # This bypasses the broken Retell SIP outbound trunk (missing auth creds).
+        return await connect_exotel_call_with_retell_ai(lead, db)
 
     # mode == "human" or "exotel_human": Bridge the call to the human agent's phone via Exotel
     if not body.agent_phone or body.agent_phone.strip() == "":

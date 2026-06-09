@@ -267,122 +267,20 @@ async def trigger_retell_call(call_job_id: uuid.UUID, db: AsyncSession | None = 
     call_job.started_at = now
     await db.commit()
 
-    clean_name = call_job.lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
-    outbound_begin_message = (
-        f"Hello, am I speaking with {clean_name}? "
-        "This is Vikas calling from Soil Systems about your land investment enquiry."
-    )
-    outbound_script = (
-        "Outbound callback/sales call. Start by confirming the lead is available, "
-        "then remind them they had enquired about Soil Systems land investment. "
-        "Do not thank them for calling. Ask whether they want details, a brochure, "
-        "or a site visit. "
-        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
-    )
-    variables = {
-        "lead_name": clean_name,
-        "customer_name": clean_name,
-        "name": clean_name,
-        "agent_name": "Vikas",
-        "language": "auto",
-        "language_preference": "auto",
-        "language_instruction": LANGUAGE_ADAPTATION_INSTRUCTION,
-        "city": call_job.lead.city or "",
-        "campaign": call_job.lead.campaign or "",
-        "zoho_lead_id": call_job.lead.zoho_lead_id,
-        "call_direction": "outbound",
-        "inbound_call": "false",
-        "outbound_bridge_call": "true",
-        "call_context": "outbound",
-        "call_script": outbound_script,
-        "conversation_script": outbound_script,
-        "opening_instruction": "You placed this outbound callback call to the lead.",
-    }
-    body = {
-        "from_number": settings.RETELL_FROM_NUMBER,
-        "to_number": call_job.lead.phone,
-        "override_agent_id": settings.RETELL_AGENT_ID,
-        "retell_llm_dynamic_variables": variables,
-        "agent_override": {
-            "retell_llm": {
-                "begin_message": outbound_begin_message,
-                "general_prompt": outbound_script,
-            },
-            "conversation_flow": {
-                "begin_message": outbound_begin_message,
-                "global_prompt": outbound_script,
-            },
-        },
-        "metadata": {
-            "lead_id": str(call_job.lead.id),
-            "call_job_id": str(call_job.id),
-            "trigger_reason": call_job.trigger_reason or "new_lead",
-        },
-        "webhook_url": f"{settings.BASE_URL.rstrip('/')}/webhooks/retell/call-completed",
-    }
-    if settings.RETELL_AGENT_VERSION is not None:
-        body["override_agent_version"] = settings.RETELL_AGENT_VERSION
-
+    # Use the Exotel bridge approach: Exotel calls lead (Leg1), bridges to
+    # Retell SIP (Leg2). Retell receives it as inbound and the /retell/inbound
+    # handler detects the outbound bridge via CrmSyncLog → AI speaks first.
+    # This bypasses the broken Retell SIP outbound trunk (missing auth creds).
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                "https://api.retellai.com/v2/create-phone-call",
-                headers={"Authorization": f"Bearer {settings.RETELL_API_KEY}"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404 and await _fallback_to_exotel_call(call_job, db):
-            return
-        call_job.status = CallJobStatus.failed
-        await db.commit()
-        await schedule_retry(call_job.id, "failed", db)
-        logger.exception("Retell call creation failed for call_job_id=%s: %s", call_job.id, exc)
-        return
-    except httpx.HTTPError as exc:
-        call_job.status = CallJobStatus.failed
-        await db.commit()
-        await schedule_retry(call_job.id, "failed", db)
-        logger.exception("Retell call creation failed for call_job_id=%s: %s", call_job.id, exc)
-        return
-
-    retell_call_id = data.get("call_id") or data.get("retell_call_id")
-    if not retell_call_id:
-        call_job.status = CallJobStatus.failed
-        await db.commit()
-        await schedule_retry(call_job.id, "failed", db)
-        logger.error("Retell response missing call id for call_job_id=%s", call_job.id)
-        return
-
-    attempt_count = await db.scalar(
-        select(func.count(CallAttempt.id)).where(CallAttempt.call_job_id == call_job.id)
-    )
-    attempt = CallAttempt(
-        call_job_id=call_job.id,
-        retell_call_id=retell_call_id,
-        attempt_number=int(attempt_count or 0) + 1,
-        status=CallAttemptStatus.initiated,
-        direction=CallDirection.outbound,
-        started_at=_utcnow(),
-    )
-    db.add(attempt)
-    await db.commit()
-
-
-async def _fallback_to_exotel_call(call_job: CallJob, db: AsyncSession) -> bool:
-    try:
-        from app.services.exotel_service import connect_exotel_call
-
-        logger.warning(
-            "Retell direct outbound returned 404 for call_job_id=%s; falling back to Exotel bridge",
-            call_job.id,
-        )
-        await connect_exotel_call(call_job.lead, db)
-        return True
+        from app.services.exotel_service import connect_exotel_call_with_retell_ai
+        result = await connect_exotel_call_with_retell_ai(call_job.lead, db)
+        logger.info("Exotel bridge call queued for call_job_id=%s result=%s", call_job.id, result)
     except Exception as exc:
-        logger.exception("Exotel fallback failed for call_job_id=%s: %s", call_job.id, exc)
-        return False
+        call_job.status = CallJobStatus.failed
+        await db.commit()
+        await schedule_retry(call_job.id, "failed", db)
+        logger.exception("Exotel bridge call failed for call_job_id=%s: %s", call_job.id, exc)
+        return
 
 
 async def schedule_retry(

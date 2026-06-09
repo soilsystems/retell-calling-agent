@@ -34,6 +34,7 @@ def cache_outbound_bridge(lead: "Lead") -> None:
         "city": lead.city or "",
         "campaign": lead.campaign or "",
         "zoho_lead_id": lead.zoho_lead_id,
+        "language_preference": str(getattr(lead, "language_preference", "") or ""),
         "cached_at": datetime.now(timezone.utc).timestamp(),
     }
     # Evict stale entries (older than 5 minutes)

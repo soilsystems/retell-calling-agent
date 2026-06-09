@@ -430,6 +430,7 @@ async def retell_inbound(
             zoho_lead_id=cached_lead.get("zoho_lead_id", ""),
             is_outbound_bridge=True,
             is_new_inbound_lead=False,
+            language_preference=cached_lead.get("language_preference", ""),
         )
 
     # ── FAST PATH: Regular inbound call ──
@@ -451,6 +452,13 @@ async def retell_inbound(
     )
 
 
+RETELL_LANGUAGE_MAP = {
+    "english": "en-IN",
+    "hindi": "hi-IN",
+    "kannada": "kn-IN",
+}
+
+
 def _build_inbound_response(
     *,
     settings: Any,
@@ -462,9 +470,11 @@ def _build_inbound_response(
     zoho_lead_id: str | None,
     is_outbound_bridge: bool,
     is_new_inbound_lead: bool,
+    language_preference: str = "",
 ) -> JSONResponse:
     """Build the Retell inbound webhook response. Pure function — no DB access."""
     call_direction = "outbound" if is_outbound_bridge else "inbound"
+    retell_language = RETELL_LANGUAGE_MAP.get(language_preference.lower(), "en-IN")
 
     outbound_bridge_script = (
         "Outbound callback/sales call. Start by confirming the lead is available, "
@@ -546,6 +556,7 @@ def _build_inbound_response(
         "override_agent_id": settings.RETELL_AGENT_ID,
         "retell_llm_dynamic_variables": variables,
         "agent_override": {
+            "language": retell_language,
             "retell_llm": {
                 "begin_message": begin_message,
             },

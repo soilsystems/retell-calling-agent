@@ -557,10 +557,9 @@ def _build_inbound_response(
     # The agent's default begin_message on Retell is outbound-style, so inbound
     # calls MUST also be overridden to avoid using the wrong script.
     if is_outbound_bridge:
-        source_mention = f" I noticed you showed interest via {source_label}." if source_label else ""
         begin_message = (
             f"Hello, am I speaking with {lead_name}? "
-            f"This is Vikas from Soil Systems.{source_mention} "
+            "This is Vikas from Soil Systems. "
             "Is this a good time for a quick chat about our farmland project?"
         )
     elif is_new_inbound_lead or not lead_name or lead_name.lower() == "unknown":

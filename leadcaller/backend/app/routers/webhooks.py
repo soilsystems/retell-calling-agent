@@ -427,6 +427,7 @@ async def retell_inbound(
             lead_phone=cached_lead["lead_phone"],
             city=cached_lead.get("city", ""),
             campaign=cached_lead.get("campaign", ""),
+            source=cached_lead.get("source", ""),
             zoho_lead_id=cached_lead.get("zoho_lead_id", ""),
             is_outbound_bridge=True,
             is_new_inbound_lead=False,
@@ -471,6 +472,7 @@ def _build_inbound_response(
     is_outbound_bridge: bool,
     is_new_inbound_lead: bool,
     language_preference: str = "",
+    source: str = "",
 ) -> JSONResponse:
     """Build the Retell inbound webhook response. Pure function — no DB access."""
     call_direction = "outbound" if is_outbound_bridge else "inbound"
@@ -502,6 +504,21 @@ def _build_inbound_response(
         else unknown_inbound_script if is_new_inbound_lead or lead_name.lower() == "unknown" else inbound_script
     )
 
+    # Build a human-readable source label so the agent can say "you enquired via Instagram"
+    # Check both source and campaign fields — Zoho may store "Instagram" in either
+    source_label = ""
+    combined_lower = f"{source or ''} {campaign or ''}".lower()
+    if "instagram" in combined_lower or "ig " in combined_lower:
+        source_label = "Instagram"
+    elif "facebook" in combined_lower or "fb " in combined_lower:
+        source_label = "Facebook"
+    elif "google" in combined_lower:
+        source_label = "Google"
+    elif source:
+        source_label = source
+    elif campaign:
+        source_label = campaign
+
     variables = {
         "lead_name": lead_name,
         "customer_name": lead_name,
@@ -513,6 +530,7 @@ def _build_inbound_response(
         "language_instruction": LANGUAGE_ADAPTATION_INSTRUCTION,
         "city": city,
         "campaign": campaign,
+        "lead_source": source_label,
         "zoho_lead_id": zoho_lead_id or "",
         "call_direction": call_direction,
         "inbound_call": "false" if is_outbound_bridge else "true",
@@ -521,7 +539,12 @@ def _build_inbound_response(
         "call_script": call_script,
         "conversation_script": call_script,
         "opening_instruction": (
-            "You placed this outbound callback call to the lead."
+            (
+                f"You placed this outbound call to {lead_name}. "
+                + (f"They showed interest via {source_label}. " if source_label else "")
+                + "You have already introduced yourself in your first message — "
+                "do NOT introduce yourself again. Continue the conversation naturally."
+            )
             if is_outbound_bridge
             else "This is a new inbound caller; collect their name and enquiry details."
             if is_new_inbound_lead or lead_name.lower() == "unknown"
@@ -529,38 +552,44 @@ def _build_inbound_response(
         ),
         "caller_known": "false" if is_new_inbound_lead or lead_name.lower() == "unknown" else "true",
     }
-    begin_message = (
-        (
+
+    # Always override begin_message so the greeting matches the call direction.
+    # The agent's default begin_message on Retell is outbound-style, so inbound
+    # calls MUST also be overridden to avoid using the wrong script.
+    if is_outbound_bridge:
+        source_mention = f" I noticed you showed interest via {source_label}." if source_label else ""
+        begin_message = (
             f"Hello, am I speaking with {lead_name}? "
-            "This is Vikas calling from Soil Systems about your land investment enquiry."
+            f"This is Vikas from Soil Systems.{source_mention} "
+            "Is this a good time for a quick chat about our farmland project?"
         )
-        if is_outbound_bridge
-        else (
-            "Hi, thank you for calling Soil Systems. This is Vikas. "
-            "May I know your name and what details you are looking for today?"
+    elif is_new_inbound_lead or not lead_name or lead_name.lower() == "unknown":
+        begin_message = (
+            "Hi, thank you for calling Soil Systems. "
+            "This is Vikas speaking. How can I help you today?"
         )
-        if is_new_inbound_lead or lead_name.lower() == "unknown"
-        else (
+    else:
+        begin_message = (
             f"Hi {lead_name}, thank you for calling Soil Systems. "
             "This is Vikas. How can I help you today?"
         )
-    )
+
     logger.info(
-        "Retell inbound answer for lead_id=%s using call_direction=%s begin_message=%s",
+        "Retell inbound answer for lead_id=%s call_direction=%s begin_message=%s",
         lead_id,
         call_direction,
         begin_message,
     )
 
+    agent_override: dict[str, Any] = {
+        "language": retell_language,
+        "retell_llm": {"begin_message": begin_message},
+    }
+
     call_inbound_response: dict[str, Any] = {
         "override_agent_id": settings.RETELL_AGENT_ID,
         "retell_llm_dynamic_variables": variables,
-        "agent_override": {
-            "language": retell_language,
-            "retell_llm": {
-                "begin_message": begin_message,
-            },
-        },
+        "agent_override": agent_override,
         "metadata": {
             "lead_id": lead_id,
             "zoho_lead_id": zoho_lead_id or "",

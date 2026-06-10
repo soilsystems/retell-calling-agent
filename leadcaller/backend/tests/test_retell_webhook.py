@@ -190,8 +190,10 @@ async def test_retell_inbound_returns_instant_response(client):
     assert variables["call_direction"] == "inbound"
     assert variables["inbound_call"] == "true"
     assert "explicitly asks to speak" in variables["language_instruction"]
-    assert "Vikas" in ci["agent_override"]["retell_llm"]["begin_message"]
+    # Inbound greeting is different from outbound
+    assert "thank you for calling" in ci["agent_override"]["retell_llm"]["begin_message"].lower()
     assert "general_prompt" not in ci["agent_override"]["retell_llm"]
+    assert ci["agent_override"]["language"] == "en-IN"
 
 
 @pytest.mark.asyncio

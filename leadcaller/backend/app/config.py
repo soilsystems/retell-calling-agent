@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     RETELL_API_KEY: str
     RETELL_AGENT_ID: str
+    RETELL_INBOUND_AGENT_ID: str | None = None
     RETELL_AGENT_VERSION: int | None = None
     RETELL_FROM_NUMBER: str
     RETELL_WEBHOOK_SECRET: str

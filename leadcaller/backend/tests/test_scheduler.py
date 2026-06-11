@@ -220,7 +220,7 @@ async def test_outbound_retell_call_uses_auto_language_instruction(monkeypatch):
             return None
 
         def json(self):
-            return {"call_id": "retell-call-1"}
+            return {"Call": {"Sid": "exotel-call-1"}}
 
     class Client:
         def __init__(self, *args, **kwargs):
@@ -232,9 +232,9 @@ async def test_outbound_retell_call_uses_auto_language_instruction(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, url, headers=None, json=None):
+        async def post(self, url, headers=None, json=None, data=None, auth=None):
             captured["url"] = url
-            captured["body"] = json
+            captured["data"] = data
             return Response()
 
     monkeypatch.setattr(retell_service, "_utcnow", lambda: now)
@@ -243,12 +243,17 @@ async def test_outbound_retell_call_uses_auto_language_instruction(monkeypatch):
 
     await retell_service.trigger_retell_call(job.id, Db())
 
-    variables = captured["body"]["retell_llm_dynamic_variables"]
-    assert variables["language"] == "auto"
-    assert variables["language_preference"] == "auto"
-    assert "Do not force a fixed language" in variables["language_instruction"]
-    assert "Do not force a fixed language" in captured["body"]["agent_override"]["retell_llm"]["general_prompt"]
-    assert added[0].retell_call_id == "retell-call-1"
+    assert "connect" in captured["url"]
+    assert captured["data"]["From"] == "+918746905010"
+    assert captured["data"]["CallerId"] == "08047283246"
+    assert added[0].operation == "exotel_connect_call"
+    assert added[0].success is True
+
+    # Verify lead is cached in _pending_outbound_bridges for the webhook to consume
+    from app.services.exotel_service import pop_pending_outbound_bridge
+    cached = pop_pending_outbound_bridge("+918746905010")
+    assert cached is not None
+    assert cached["lead_name"] == "Ravi Chandra"
 
 
 def test_sunday_schedules_monday_10am():

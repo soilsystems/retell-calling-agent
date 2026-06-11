@@ -28,13 +28,7 @@ from app.utils.business_hours import get_next_business_day_at_10am, is_business_
 
 logger = logging.getLogger(__name__)
 
-LANGUAGE_ADAPTATION_INSTRUCTION = (
-    "Do not force a fixed language. Start naturally in simple English unless the caller "
-    "starts in another language. Detect the caller's spoken language from their replies "
-    "and continue in that language. If the caller explicitly asks to speak in English, "
-    "Hindi, Kannada, or another language, immediately switch to that language. If they "
-    "mix languages, mirror their mix while keeping the conversation clear."
-)
+from app.call_scripts import LANGUAGE_ADAPTATION_INSTRUCTION  # noqa: E402 — re-export for backwards compat
 
 
 def _utcnow() -> datetime:

@@ -21,51 +21,96 @@ logger = logging.getLogger(__name__)
 _pending_outbound_bridges: dict[str, dict] = {}
 
 
-def cache_outbound_bridge(lead: "Lead") -> None:
+def cache_outbound_bridge(lead: "Lead", call_sid: str | None = None) -> None:
     """Cache lead info for fast lookup in the Retell inbound webhook."""
     from datetime import datetime, timezone
     suffix = "".join(c for c in (lead.phone or "") if c.isdigit())[-10:]
     if not suffix:
         return
-    _pending_outbound_bridges[suffix] = {
+    lead_info = {
         "lead_id": str(lead.id),
         "lead_name": lead.name,
         "lead_phone": lead.phone,
         "city": lead.city or "",
         "campaign": lead.campaign or "",
         "zoho_lead_id": lead.zoho_lead_id,
-        "source": lead.source or "",
+        "source": getattr(lead, "source", None) or "",
         "language_preference": str(getattr(lead, "language_preference", "") or ""),
         "cached_at": datetime.now(timezone.utc).timestamp(),
+        "call_sid": call_sid,
     }
-    # Evict stale entries (older than 5 minutes)
-    cutoff = datetime.now(timezone.utc).timestamp() - 300
+    _pending_outbound_bridges[suffix] = lead_info
+    if call_sid:
+        _pending_outbound_bridges[call_sid] = lead_info
+
+    # Evict stale entries (older than 90 seconds).
+    # Bridged outbound calls reach Retell's inbound webhook within ~10-30s of
+    # Exotel.connect (dial lead → lead picks up → bridge to Retell SIP).
+    # A tight TTL prevents a stale entry from polluting a later customer-inbound call
+    # via LIFO fallback.
+    cutoff = datetime.now(timezone.utc).timestamp() - 90
     stale = [k for k, v in _pending_outbound_bridges.items() if v["cached_at"] < cutoff]
     for k in stale:
         _pending_outbound_bridges.pop(k, None)
-    logger.info("[OutboundCache] Cached lead=%s phone_suffix=%s", lead.name, suffix)
+    logger.info("[OutboundCache] Cached lead=%s phone_suffix=%s call_sid=%s", lead.name, suffix, call_sid)
 
 
-def pop_pending_outbound_bridge() -> dict | None:
-    """Pop the most recent pending outbound bridge (LIFO). Returns None if empty."""
+def pop_pending_outbound_bridge(key: str | None = None) -> dict | None:
+    """Pop a pending outbound bridge by key (either phone suffix, call_sid, or LIFO if None)."""
     if not _pending_outbound_bridges:
         return None
-    # Return and remove the most recently cached entry
+
     from datetime import datetime, timezone
-    cutoff = datetime.now(timezone.utc).timestamp() - 300
-    # Find the newest non-stale entry
-    newest_key = None
-    newest_ts = 0.0
+    cutoff = datetime.now(timezone.utc).timestamp() - 90
+
+    # Clean up stale entries first
     for k, v in list(_pending_outbound_bridges.items()):
         if v["cached_at"] < cutoff:
             _pending_outbound_bridges.pop(k, None)
-            continue
-        if v["cached_at"] > newest_ts:
-            newest_ts = v["cached_at"]
-            newest_key = k
-    if newest_key is None:
-        return None
-    return _pending_outbound_bridges.pop(newest_key)
+
+    if key:
+        # 1. Try to pop directly by key (could be call_sid or phone suffix)
+        if key in _pending_outbound_bridges:
+            lead_info = _pending_outbound_bridges.pop(key)
+            suffix = "".join(c for c in (lead_info.get("lead_phone") or "") if c.isdigit())[-10:]
+            _pending_outbound_bridges.pop(suffix, None)
+            call_sid = lead_info.get("call_sid")
+            if call_sid:
+                _pending_outbound_bridges.pop(call_sid, None)
+            logger.info("[OutboundCache] Popping cached lead by key match: %s", key)
+            return lead_info
+
+        # 2. Try to pop by phone suffix (last 10 digits) if key is a phone number
+        digits = "".join(c for c in key if c.isdigit())
+        suffix = digits[-10:] if len(digits) >= 10 else digits
+        if suffix and suffix in _pending_outbound_bridges:
+            lead_info = _pending_outbound_bridges.pop(suffix)
+            call_sid = lead_info.get("call_sid")
+            if call_sid:
+                _pending_outbound_bridges.pop(call_sid, None)
+            logger.info("[OutboundCache] Popping cached lead by phone suffix match: %s", suffix)
+            return lead_info
+
+    # LIFO fallback (only when key is None)
+    if key is None:
+        newest_key = None
+        newest_ts = 0.0
+        for k, v in list(_pending_outbound_bridges.items()):
+            if v["cached_at"] > newest_ts:
+                newest_ts = v["cached_at"]
+                newest_key = k
+
+        if newest_key is not None:
+            lead_info = _pending_outbound_bridges.pop(newest_key)
+            suffix = "".join(c for c in (lead_info.get("lead_phone") or "") if c.isdigit())[-10:]
+            _pending_outbound_bridges.pop(suffix, None)
+            call_sid = lead_info.get("call_sid")
+            if call_sid:
+                _pending_outbound_bridges.pop(call_sid, None)
+            logger.info("[OutboundCache] Popping LIFO cached lead: %s (no key match)", newest_key)
+            return lead_info
+
+    return None
 
 
 def _required_setting(name: str, value: str | None) -> str:
@@ -180,19 +225,19 @@ async def _register_retell_phone_call(lead: "Lead", settings: Any) -> str:
     This must be called BEFORE Exotel dials the lead so the session is ready
     when the lead picks up and ExoML opens the WebSocket.
     """
-    from app.services.retell_service import LANGUAGE_ADAPTATION_INSTRUCTION  # avoid circular at import time
+    from app.call_scripts import (  # avoid circular at import time
+        LANGUAGE_ADAPTATION_INSTRUCTION,
+        OUTBOUND_SCRIPT,
+        OUTBOUND_BEGIN_KNOWN,
+        OUTBOUND_BEGIN_UNKNOWN,
+    )
 
     clean_name = lead.name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
-    outbound_script = (
-        "Outbound callback/sales call. Start by confirming the lead is available, "
-        "then remind them they had enquired about Soil Systems land investment. "
-        "Do not thank them for calling. Ask whether they want details, a brochure, "
-        "or a site visit. "
-        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
-    )
+    outbound_script = OUTBOUND_SCRIPT
     begin_message = (
-        f"Hello, am I speaking with {clean_name}? "
-        "This is Vikas calling from Soil Systems about your land investment enquiry."
+        OUTBOUND_BEGIN_KNOWN.format(lead_name=clean_name)
+        if clean_name and clean_name.lower() != "unknown"
+        else OUTBOUND_BEGIN_UNKNOWN
     )
     variables = {
         "lead_name": clean_name,
@@ -288,10 +333,6 @@ async def connect_exotel_call_with_retell_ai(lead: "Lead", db: AsyncSession) -> 
     # detects the recent 'exotel_connect_call' log → uses outbound AI script.
     retell_sip_number = _required_setting("RETELL_FROM_NUMBER", settings.RETELL_FROM_NUMBER)
 
-    # Cache lead info so the Retell inbound webhook can respond instantly
-    # without slow DB roundtrips to Supabase.
-    cache_outbound_bridge(lead)
-
     payload: dict[str, str] = {
         "From": format_phone_number(lead.phone),       # Lead's number — Exotel calls this first (Leg1)
         "To": retell_sip_number,                        # Retell SIP — Exotel calls this when lead picks up (Leg2)
@@ -319,6 +360,8 @@ async def connect_exotel_call_with_retell_ai(lead: "Lead", db: AsyncSession) -> 
             )
             response.raise_for_status()
             response_data = _parse_exotel_response(response)
+            call_sid = _extract_exotel_call_sid(response_data)
+            cache_outbound_bridge(lead, call_sid)
     except httpx.HTTPStatusError as exc:
         error = exc.response.text[:1000]
         logger.warning("Exotel AI bridge call failed for lead=%s status=%s", lead.id, exc.response.status_code)

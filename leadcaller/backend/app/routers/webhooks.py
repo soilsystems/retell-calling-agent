@@ -27,8 +27,17 @@ from app.config import get_settings
 from app.schemas.lead_schema import ZohoLeadWebhook
 from app.schemas.retell_schema import RetellCallCompletedWebhook
 from app.services.lead_service import schedule_call_for_lead
-from app.services.retell_service import (
+from app.call_scripts import (
     LANGUAGE_ADAPTATION_INSTRUCTION,
+    OUTBOUND_SCRIPT,
+    OUTBOUND_BEGIN_KNOWN,
+    OUTBOUND_BEGIN_UNKNOWN,
+    INBOUND_SCRIPT,
+    INBOUND_BEGIN_KNOWN,
+    INBOUND_UNKNOWN_SCRIPT,
+    INBOUND_BEGIN_UNKNOWN,
+)
+from app.services.retell_service import (
     process_retell_completion,
     retell_event_key,
     schedule_retry,
@@ -405,33 +414,112 @@ async def retell_inbound(
     settings = get_settings()
     exophone = (settings.EXOTEL_CALLER_ID or "").replace("-", "")
 
-    # ── FAST PATH: Outbound bridge via Exotel ──
-    # Only when from_number is our ExoPhone — that means Exotel's connect API
-    # bridged Leg 2 to Retell. Regular inbound calls (from a real caller's phone)
-    # also have Exotel SIP headers but must NOT hit this path.
+    # ── Outbound bridge identification via Call SID ──
+    cached_lead = None
+    db_lead = None
+    is_outbound_bridge = False
+
+    # Extract Call SID from custom SIP headers if present
+    exotel_call_sid = None
+    for k, v in custom_sip_headers.items():
+        if k.lower() in {"x-exotel-callsid", "x-exotel-call-sid", "x-callsid", "callsid"}:
+            exotel_call_sid = str(v)
+            break
+
     from_number = call_inbound.get("from_number") or payload.get("from_number") or ""
     from_digits = "".join(c for c in from_number if c.isdigit())
     is_from_exophone = exophone and from_digits.endswith(exophone[-10:])
 
-    cached_lead = None
-    if is_from_exophone:
-        cached_lead = pop_pending_outbound_bridge()
+    # ── Outbound bridge identification ──
+    # CORRECT MODEL: Both inbound AND outbound calls arrive at Retell with
+    # from_number == ExoPhone (Exotel is always the SIP sender). So from_number
+    # is NOT a discriminator.
+    #
+    # The ONLY reliable signal that a call is outbound is that WE registered it
+    # in cache/DB when we initiated it via Exotel's /Calls/connect API. Any call
+    # not present in our cache/DB is, by definition, an unsolicited inbound call.
+    #
+    # Strategy (in priority order):
+    #   1. Cache hit by exact SID    → outbound
+    #   2. DB hit by exact SID       → outbound
+    #   3. LIFO cache (very recent)  → outbound (handles SID format mismatch)
+    #   4. Most-recent-DB (5min)     → outbound (handles SID format mismatch)
+    #   5. otherwise                 → inbound
 
-    if cached_lead:
-        # Outbound bridge — respond instantly with cached lead data
-        clean_name = cached_lead["lead_name"].replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
+    if exotel_call_sid:
+        logger.info("Retell inbound: Extracted Exotel Call SID = %s", exotel_call_sid)
+        cached_lead = pop_pending_outbound_bridge(exotel_call_sid)
+        if cached_lead:
+            logger.info("Retell inbound: Found cached outbound lead by Call SID: %s", cached_lead.get("lead_name"))
+            is_outbound_bridge = True
+        elif hasattr(db, "execute"):
+            db_lead = await _find_recent_exotel_lead(db, exotel_call_sid=exotel_call_sid)
+            if db_lead:
+                logger.info("Retell inbound: Found recent outbound lead in DB by Call SID: %s", db_lead.name)
+                is_outbound_bridge = True
+
+    # SID-mismatch fallback: if we have ANY pending outbound bridge in cache (set
+    # by us within the last 5 minutes), this almost certainly IS that call — the
+    # SID format from Exotel /Calls/connect differs from what Retell sees in SIP.
+    # Without this fallback, every outbound call would be mis-classified as inbound.
+    if not is_outbound_bridge:
+        cached_lead = pop_pending_outbound_bridge()  # LIFO
+        if cached_lead:
+            logger.info("Retell inbound: SID didn't match but LIFO cache has recent outbound lead: %s", cached_lead.get("lead_name"))
+            is_outbound_bridge = True
+        elif hasattr(db, "execute"):
+            db_lead = await _find_recent_exotel_lead(db)
+            if db_lead:
+                logger.info("Retell inbound: SID didn't match but DB has recent outbound call for: %s", db_lead.name)
+                is_outbound_bridge = True
+
+    if not is_outbound_bridge:
+        logger.info("Retell inbound: No outbound bridge registered — treating as customer inbound call")
+
+    if is_outbound_bridge:
+        # Outbound bridge — respond with lead data if we have it, generic outbound greeting otherwise
+        if cached_lead:
+            lead_id = cached_lead["lead_id"]
+            lead_name = cached_lead["lead_name"]
+            lead_phone = cached_lead["lead_phone"]
+            city = cached_lead.get("city", "")
+            campaign = cached_lead.get("campaign", "")
+            source = cached_lead.get("source", "")
+            zoho_lead_id = cached_lead.get("zoho_lead_id", "")
+            language_pref = cached_lead.get("language_preference", "")
+        elif db_lead:
+            lead_id = str(db_lead.id)
+            lead_name = db_lead.name
+            lead_phone = db_lead.phone
+            city = db_lead.city or ""
+            campaign = db_lead.campaign or ""
+            source = db_lead.source or ""
+            zoho_lead_id = db_lead.zoho_lead_id
+            language_pref = db_lead.language_preference.value if db_lead.language_preference else ""
+        else:
+            # Outbound bridge confirmed by ExoPhone but no lead found — use generic outbound greeting
+            lead_id = ""
+            lead_name = ""
+            lead_phone = from_number
+            city = ""
+            campaign = ""
+            source = ""
+            zoho_lead_id = ""
+            language_pref = ""
+
+        clean_name = lead_name.replace("(Sample)", "").replace("(sample)", "").replace("Test", "").strip()
         return _build_inbound_response(
             settings=settings,
-            lead_id=cached_lead["lead_id"],
+            lead_id=lead_id,
             lead_name=clean_name,
-            lead_phone=cached_lead["lead_phone"],
-            city=cached_lead.get("city", ""),
-            campaign=cached_lead.get("campaign", ""),
-            source=cached_lead.get("source", ""),
-            zoho_lead_id=cached_lead.get("zoho_lead_id", ""),
+            lead_phone=lead_phone,
+            city=city,
+            campaign=campaign,
+            source=source,
+            zoho_lead_id=zoho_lead_id,
             is_outbound_bridge=True,
             is_new_inbound_lead=False,
-            language_preference=cached_lead.get("language_preference", ""),
+            language_preference=language_pref,
         )
 
     # ── FAST PATH: Regular inbound call ──
@@ -478,31 +566,12 @@ def _build_inbound_response(
     call_direction = "outbound" if is_outbound_bridge else "inbound"
     retell_language = RETELL_LANGUAGE_MAP.get(language_preference.lower(), "en-IN")
 
-    outbound_bridge_script = (
-        "Outbound callback/sales call. Start by confirming the lead is available, "
-        "then remind them they had enquired about Soil Systems land investment. "
-        "Do not thank them for calling. Ask whether they want details, a brochure, "
-        "or a site visit. "
-        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
-    )
-    inbound_script = (
-        "Inbound support/enquiry call. The lead called us. Thank them for calling, "
-        "ask how you can help, then answer questions and qualify their interest. "
-        "Do not say you are calling them about an enquiry. "
-        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
-    )
-    unknown_inbound_script = (
-        "New inbound caller. Their name is not in Zoho yet. Thank them for calling Soil Systems, "
-        "introduce yourself as Vikas, ask for their name, city, and what details they need about "
-        "the land project. Confirm their phone number if needed. Save the collected details in "
-        "structured data using caller_name, caller_city, caller_email if shared, and caller_requirement. "
-        f"{LANGUAGE_ADAPTATION_INSTRUCTION}"
-    )
-    call_script = (
-        outbound_bridge_script
-        if is_outbound_bridge
-        else unknown_inbound_script if is_new_inbound_lead or lead_name.lower() == "unknown" else inbound_script
-    )
+    if is_outbound_bridge:
+        call_script = OUTBOUND_SCRIPT
+    elif is_new_inbound_lead or lead_name.lower() == "unknown":
+        call_script = INBOUND_UNKNOWN_SCRIPT
+    else:
+        call_script = INBOUND_SCRIPT
 
     # Build a human-readable source label so the agent can say "you enquired via Instagram"
     # Check both source and campaign fields — Zoho may store "Instagram" in either
@@ -557,21 +626,14 @@ def _build_inbound_response(
     # The agent's default begin_message on Retell is outbound-style, so inbound
     # calls MUST also be overridden to avoid using the wrong script.
     if is_outbound_bridge:
-        begin_message = (
-            f"Hello, am I speaking with {lead_name}? "
-            "This is Vikas from Soil Systems. "
-            "Is this a good time for a quick chat about our farmland project?"
-        )
+        if not lead_name or lead_name.lower() == "unknown":
+            begin_message = OUTBOUND_BEGIN_UNKNOWN
+        else:
+            begin_message = OUTBOUND_BEGIN_KNOWN.format(lead_name=lead_name)
     elif is_new_inbound_lead or not lead_name or lead_name.lower() == "unknown":
-        begin_message = (
-            "Hi, thank you for calling Soil Systems. "
-            "This is Vikas speaking. How can I help you today?"
-        )
+        begin_message = INBOUND_BEGIN_UNKNOWN
     else:
-        begin_message = (
-            f"Hi {lead_name}, thank you for calling Soil Systems. "
-            "This is Vikas. How can I help you today?"
-        )
+        begin_message = INBOUND_BEGIN_KNOWN.format(lead_name=lead_name)
 
     logger.info(
         "Retell inbound answer for lead_id=%s call_direction=%s begin_message=%s",
@@ -580,13 +642,25 @@ def _build_inbound_response(
         begin_message,
     )
 
+    # Override ONLY the begin_message. Do NOT override general_prompt — the
+    # Retell dashboard prompt is the source of truth for agent persona and
+    # branches on {{call_direction}} / dynamic variables we already send.
+    # Overriding general_prompt would wipe out the dashboard's rich prompt.
     agent_override: dict[str, Any] = {
-        "language": retell_language,
-        "retell_llm": {"begin_message": begin_message},
+        "agent": {
+            "language": retell_language,
+        },
+        "retell_llm": {
+            "begin_message": begin_message,
+        },
+        "conversation_flow": {
+            "begin_message": begin_message,
+        },
     }
 
     call_inbound_response: dict[str, Any] = {
-        "override_agent_id": settings.RETELL_AGENT_ID,
+        "override_agent_id": settings.RETELL_INBOUND_AGENT_ID if (not is_outbound_bridge and getattr(settings, "RETELL_INBOUND_AGENT_ID", None)) else settings.RETELL_AGENT_ID,
+        "dynamic_variables": variables,
         "retell_llm_dynamic_variables": variables,
         "agent_override": agent_override,
         "metadata": {
@@ -660,7 +734,11 @@ async def whatsapp_status_callback(request: Request) -> JSONResponse:
 
 
 async def _find_recent_exotel_lead(db: AsyncSession, exotel_call_sid: str | None = None) -> Lead | None:
-    window_start = datetime.now(timezone.utc) - timedelta(minutes=5)
+    # Tight 90-second window matches the in-memory cache TTL — bridged outbound
+    # calls reach Retell's inbound webhook within ~10-30s of Exotel.connect.
+    # A wider window risks misclassifying a real customer-inbound call as an
+    # outbound bridge based on a stale CrmSyncLog row.
+    window_start = datetime.now(timezone.utc) - timedelta(seconds=90)
     query = (
         select(CrmSyncLog)
         .options(selectinload(CrmSyncLog.lead))

@@ -31,6 +31,18 @@ import "./styles.css";
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 const api = (path: string) => `${API_BASE}${path}`;
 
+// ngrok's free tier shows an HTML "browser warning" page on first visit that
+// breaks XHR/fetch responses. Sending this header bypasses it for all requests
+// going through any ngrok tunnel.
+if (API_BASE.includes("ngrok")) {
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const headers = new Headers(init.headers || {});
+    headers.set("ngrok-skip-browser-warning", "true");
+    return originalFetch(input, { ...init, headers });
+  };
+}
+
 type IconComponent = React.ElementType<{ size?: number }>;
 
 type Summary = {

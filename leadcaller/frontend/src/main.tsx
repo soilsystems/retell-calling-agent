@@ -1325,22 +1325,59 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
   };
 
   React.useEffect(() => {
-    if (activeLead) {
-      const lead = leads.find(l => l.id === activeLead);
-      if (lead) {
-        setPhone(lead.phone);
-        setName(lead.name);
-      }
-    } else {
-      setPhone("");
-      setName("");
+    if (!activeLead) return;
+    const lead = leads.find(l => l.id === activeLead);
+    if (lead) {
+      setPhone(lead.phone);
+      setName(lead.name);
     }
   }, [activeLead, leads]);
 
+  React.useEffect(() => {
+    if (!success && !error) return;
+    const id = window.setTimeout(() => {
+      setSuccess(null);
+      setError(null);
+    }, 4500);
+    return () => window.clearTimeout(id);
+  }, [success, error]);
+
+  const sortedLeads = React.useMemo(
+    () => [...leads].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
+    [leads]
+  );
+
+  const templateLabels = {
+    completed: "Completed Follow-up",
+    missed: "Missed Call Nudge"
+  } as const;
+
   return (
     <section className="content">
-      {success && <div className="notice goodNotice"><CheckCircle2 size={18} /><span>{success}</span></div>}
-      {error && <div className="notice badNotice"><AlertCircle size={18} /><span>{error}</span></div>}
+      {success && (
+        <div className="notice goodNotice">
+          <CheckCircle2 size={18} />
+          <span>{success}</span>
+          <button
+            type="button"
+            onClick={() => setSuccess(null)}
+            style={{ marginLeft: "auto", background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "0 4px" }}
+            aria-label="Dismiss"
+          >×</button>
+        </div>
+      )}
+      {error && (
+        <div className="notice badNotice">
+          <AlertCircle size={18} />
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            style={{ marginLeft: "auto", background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "0 4px" }}
+            aria-label="Dismiss"
+          >×</button>
+        </div>
+      )}
 
       <div className="split">
         <div className="panel">
@@ -1370,7 +1407,7 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
               style={{ flex: 1, backgroundColor: template === "completed" ? "#25d366" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
               onClick={() => setTemplate("completed")}
             >
-              Completed Follow-up
+              {templateLabels.completed}
             </button>
             <button 
               type="button"
@@ -1378,7 +1415,7 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
               style={{ flex: 1, backgroundColor: template === "missed" ? "#eab308" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
               onClick={() => setTemplate("missed")}
             >
-              Missed Call Nudge
+              {templateLabels.missed}
             </button>
           </div>
 
@@ -1391,7 +1428,7 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
                 style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }}
               >
                 <option value="">-- Choose Lead --</option>
-                {leads.map(l => (
+                {sortedLeads.map(l => (
                   <option key={l.id} value={l.id}>{l.name} ({l.phone})</option>
                 ))}
               </select>
@@ -1423,7 +1460,7 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
               style={{ backgroundColor: "#25d366", borderColor: "#25d366", color: "#fff", width: "100%", padding: "12px", marginTop: 10, cursor: "pointer" }}
             >
               <Send size={15} />
-              <span>{loading ? "Sending Notification..." : `Send ${template.charAt(0).toUpperCase() + template.slice(1)} Template`}</span>
+              <span>{loading ? "Sending Notification..." : `Send ${templateLabels[template]}`}</span>
             </button>
           </form>
         </div>

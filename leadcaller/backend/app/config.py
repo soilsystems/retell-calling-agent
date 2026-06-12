@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     META_WA_PHONE_NUMBER_ID: str | None = None
     META_WA_ACCESS_TOKEN: str | None = None
 
+    # Master switch for WhatsApp sending. Set to False until Meta business
+    # verification for SOIL_SYSTEMS is complete — template messages silently
+    # fail otherwise and clog retry queues.
+    WHATSAPP_ENABLED: bool = False
+
     RETELL_API_KEY: str
     RETELL_AGENT_ID: str
     RETELL_INBOUND_AGENT_ID: str | None = None

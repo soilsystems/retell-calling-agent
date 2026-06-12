@@ -139,8 +139,14 @@ async def retell_call_completed(
         await db.commit()
         await db.refresh(webhook_event)
 
+    # Retell posts every lifecycle event (call_started, call_ended, call_analyzed)
+    # to this endpoint. Post-call actions (Zoho sync, WhatsApp, followups, retries)
+    # must only run once the call is actually over — otherwise the lead receives
+    # the WhatsApp follow-up while still on the phone.
+    call_over = (payload.event or "").lower() in {"call_ended", "call_analyzed"} or payload.ended_at is not None
+
     attempt = await process_retell_completion(payload, webhook_event, db)
-    if attempt:
+    if attempt and call_over:
         background_tasks.add_task(sync_to_zoho, attempt.id)
         background_tasks.add_task(send_whatsapp_for_call, attempt.id)
         structured = attempt.structured_data or {}
@@ -148,6 +154,12 @@ async def retell_call_completed(
             background_tasks.add_task(create_followup_task, attempt.id)
         if attempt.status.value in {"no_answer", "busy", "failed"}:
             background_tasks.add_task(schedule_retry, attempt.call_job_id, attempt.status.value)
+    elif attempt:
+        logger.info(
+            "Retell event=%s for attempt=%s — call still in progress, deferring post-call actions",
+            payload.event,
+            attempt.id,
+        )
 
     return JSONResponse(status_code=200, content={"status": "accepted"})
 

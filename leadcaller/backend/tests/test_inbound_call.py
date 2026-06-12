@@ -68,12 +68,36 @@ async def test_inbound_call_creates_new_lead_if_not_found(monkeypatch):
             return None
 
     db = Db()
-    lead = await retell_service._create_inbound_lead(payload, db)
+    lead = await retell_service._create_inbound_lead(payload, db=db)
 
     assert lead.zoho_lead_id == "zoho-new"
     assert lead.name == "Unknown"
     assert lead.phone == "+919999999999"
     assert lead.source == "Inbound Call"
+
+
+@pytest.mark.asyncio
+async def test_inbound_lead_uses_real_caller_phone_over_exophone(monkeypatch):
+    """Exotel uses our ExoPhone as the SIP From — _create_inbound_lead must
+    prefer the resolved real caller phone over the payload's from_number."""
+    payload = inbound_payload(from_number="+918047283246")  # ExoPhone
+
+    async def fake_create_zoho(phone, db):
+        return "zoho-real"
+
+    class Db:
+        def add(self, item): pass
+        async def commit(self): pass
+        async def refresh(self, item): pass
+
+    monkeypatch.setattr(
+        "app.services.zoho_service.create_zoho_lead_for_inbound", fake_create_zoho
+    )
+
+    lead = await retell_service._create_inbound_lead(
+        payload, real_caller_phone="+919137500132", db=Db()
+    )
+    assert lead.phone == "+919137500132"  # NOT the ExoPhone
 
 
 @pytest.mark.asyncio

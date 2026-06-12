@@ -60,8 +60,29 @@ async def _find_lead_by_phone(phone: str | None, db: AsyncSession) -> Lead | Non
     return result.scalars().first()
 
 
-async def _create_inbound_lead(payload: RetellCallCompletedWebhook, db: AsyncSession) -> Lead | None:
-    caller_phone = payload.from_number or payload.to_number
+async def _resolve_real_inbound_caller(payload: RetellCallCompletedWebhook) -> str | None:
+    """Return the real customer phone for an inbound call.
+
+    payload.from_number is our ExoPhone (Exotel uses it as the SIP From when
+    bridging), so we go to Exotel's Call resource to find the parent inbound
+    call's actual From. Returns None on any error — caller should fall back
+    to whatever phone is in the payload.
+    """
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+    try:
+        return await fetch_real_inbound_caller_phone(payload.to_number)
+    except Exception as exc:
+        logger.warning("Failed to resolve real inbound caller phone: %s", exc)
+        return None
+
+
+async def _create_inbound_lead(
+    payload: RetellCallCompletedWebhook,
+    *,
+    real_caller_phone: str | None = None,
+    db: AsyncSession,
+) -> Lead | None:
+    caller_phone = real_caller_phone or payload.from_number or payload.to_number
     if not caller_phone:
         return None
 
@@ -351,9 +372,16 @@ async def process_retell_completion(
                 logger.warning("Failed to parse metadata lead_id for call: %s", exc)
 
         if not lead and direction == CallDirection.inbound:
-            lead = await _find_lead_by_phone(payload.from_number, db) or await _find_lead_by_phone(payload.to_number, db)
+            # Exotel bridges inbound calls to Retell SIP using our ExoPhone as
+            # the SIP From — so payload.from_number is OUR number, not the real
+            # caller's. Resolve the real caller phone via Exotel before the
+            # phone-based lead lookup, otherwise we end up sending the WhatsApp
+            # follow-up to our own business number.
+            real_caller_phone = await _resolve_real_inbound_caller(payload)
+            lookup_phone = real_caller_phone or payload.from_number
+            lead = await _find_lead_by_phone(lookup_phone, db) or await _find_lead_by_phone(payload.to_number, db)
             if not lead:
-                lead = await _create_inbound_lead(payload, db)
+                lead = await _create_inbound_lead(payload, real_caller_phone=real_caller_phone, db=db)
 
         if lead:
             job_result = await db.execute(

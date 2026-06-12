@@ -1404,15 +1404,15 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
             <button 
               type="button"
               className="tableAction" 
-              style={{ flex: 1, backgroundColor: template === "completed" ? "#25d366" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
+              style={{ flex: 1, backgroundColor: template === "completed" ? "#25d366" : "#f1f5f9", border: "1px solid #e2e8f0", color: template === "completed" ? "#fff" : "#475569", cursor: "pointer", fontWeight: "bold", borderRadius: 6, padding: "10px" }}
               onClick={() => setTemplate("completed")}
             >
               {templateLabels.completed}
             </button>
-            <button 
+            <button
               type="button"
-              className="tableAction" 
-              style={{ flex: 1, backgroundColor: template === "missed" ? "#eab308" : "rgba(255,255,255,0.05)", border: "none", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
+              className="tableAction"
+              style={{ flex: 1, backgroundColor: template === "missed" ? "#eab308" : "#f1f5f9", border: "1px solid #e2e8f0", color: template === "missed" ? "#fff" : "#475569", cursor: "pointer", fontWeight: "bold", borderRadius: 6, padding: "10px" }}
               onClick={() => setTemplate("missed")}
             >
               {templateLabels.missed}
@@ -1421,11 +1421,11 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
 
           <form onSubmit={handleSendTemplate} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
-              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Select Lead (Optional)</label>
-              <select 
-                value={activeLead} 
-                onChange={e => setActiveLead(e.target.value)} 
-                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }}
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#64748b" }}>Select Lead (Optional)</label>
+              <select
+                value={activeLead}
+                onChange={e => setActiveLead(e.target.value)}
+                style={{ width: "100%", padding: "10px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, color: "#1e293b", outline: "none" }}
               >
                 <option value="">-- Choose Lead --</option>
                 {sortedLeads.map(l => (
@@ -1434,23 +1434,23 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
               </select>
             </div>
             <div>
-              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Lead Name</label>
-              <input 
-                value={name} 
-                onChange={e => setName(e.target.value)} 
-                placeholder="e.g. Darshan" 
-                required 
-                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }} 
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#64748b" }}>Lead Name</label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Darshan"
+                required
+                style={{ width: "100%", padding: "10px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, color: "#1e293b", outline: "none" }}
               />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#94a3b8" }}>Phone Number (with Country Code)</label>
-              <input 
-                value={phone} 
-                onChange={e => setPhone(e.target.value)} 
-                placeholder="e.g. +91XXXXXXXXXX" 
-                required 
-                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#fff", outline: "none" }} 
+              <label style={{ display: "block", fontSize: 12, marginBottom: 6, color: "#64748b" }}>Phone Number (with Country Code)</label>
+              <input
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                placeholder="e.g. +91XXXXXXXXXX"
+                required
+                style={{ width: "100%", padding: "10px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, color: "#1e293b", outline: "none" }}
               />
             </div>
             <button 

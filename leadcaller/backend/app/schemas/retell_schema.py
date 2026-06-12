@@ -29,6 +29,7 @@ class RetellCallCompletedWebhook(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
 
     call_id: str
+    event: str | None = None
     call_status: str = "completed"
     transcript: str | None = None
     summary: str | None = None
@@ -59,6 +60,7 @@ class RetellCallCompletedWebhook(BaseModel):
 
         return {
             "call_id": call.get("call_id"),
+            "event": data.get("event"),
             "call_status": call.get("call_status") or data.get("event") or "completed",
             "transcript": call.get("transcript"),
             "summary": call_analysis.get("call_summary") or call.get("summary"),

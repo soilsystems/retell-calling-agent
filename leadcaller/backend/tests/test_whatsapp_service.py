@@ -18,6 +18,7 @@ from app.services.whatsapp_service import (
 )
 
 META_URL = "https://graph.facebook.com/v17.0/test-phone-number-id/messages"
+EXOTEL_URL = "https://api.in.exotel.com/v2/accounts/test-account-sid/messages"
 
 
 class FakeDb:
@@ -30,6 +31,10 @@ class FakeDb:
 
     async def commit(self):
         self.commits += 1
+
+    async def scalar(self, stmt):
+        # Mimics the dedup lookup: truthy if a previously-sent log exists
+        return any(r.status == WhatsAppLogStatus.sent for r in self.rows) or None
 
 
 def make_attempt(phone="+919876543210", name="Rahul"):
@@ -63,9 +68,17 @@ def make_attempt(phone="+919876543210", name="Rahul"):
 @pytest.fixture
 def meta_wa_settings(monkeypatch):
     settings = SimpleNamespace(
+        WHATSAPP_ENABLED=True,
+        BASE_URL="",
         META_WA_PHONE_NUMBER_ID="test-phone-number-id",
         META_WA_ACCESS_TOKEN="test-access-token",
         EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS=SOIL_SYSTEMS_TEMPLATE,
+        # Exotel WA credentials — primary path tries Exotel first
+        EXOTEL_WA_API_KEY="test-exotel-key",
+        EXOTEL_WA_API_TOKEN="test-exotel-token",
+        EXOTEL_WA_SUBDOMAIN="api.in.exotel.com",
+        EXOTEL_WA_ACCOUNT_SID="test-account-sid",
+        EXOTEL_WA_PHONE_NUMBER="+918047283246",
     )
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: settings)
     return settings
@@ -135,21 +148,26 @@ def test_build_meta_template_payload_matches_shape():
 
 
 @pytest.mark.asyncio
-async def test_call_completion_sends_soil_systems_template_to_lead_phone(monkeypatch, meta_wa_settings):
+async def test_call_completion_sends_soil_systems_template_via_exotel(monkeypatch, meta_wa_settings):
+    """Exotel is the primary path — assert it's called and Meta is not."""
     attempt = make_attempt(phone="+919876543210", name="Rahul")
 
     with respx.mock(assert_all_called=True) as router:
-        route = router.post(META_URL).mock(return_value=Response(200, json={"message_id": "msg-123"}))
+        route = router.post(EXOTEL_URL).mock(
+            return_value=Response(200, json={"response": {"whatsapp": {"messages": [{"status": "success"}]}}})
+        )
         db = await run_for_attempt(monkeypatch, attempt)
 
     payload = request_json(route)
-    assert payload["messaging_product"] == "whatsapp"
-    assert payload["to"] == "919876543210"
-    assert payload["type"] == "template"
-    assert payload["template"]["name"] == "soil_systems"
-    assert payload["template"]["language"]["code"] == "en"
-    assert "components" not in payload["template"]
-    assert_bearer_auth(route)
+    message = payload["whatsapp"]["messages"][0]
+    assert message["to"] == "+919876543210"
+    assert message["content"]["template"]["name"] == "soil_systems"
+    # The approved template has a document header and NO body variables —
+    # the brochure header must be present and no body component sent.
+    components = message["content"]["template"]["components"]
+    assert components[0]["type"] == "header"
+    assert components[0]["parameters"][0]["document"]["link"].endswith(".pdf")
+    assert all(c["type"] != "body" for c in components)
     assert db.rows[-1].status == WhatsAppLogStatus.sent
     assert db.rows[-1].template_name == "soil_systems"
     assert db.rows[-1].phone == "+919876543210"
@@ -160,10 +178,12 @@ async def test_10_digit_lead_phone_gets_91_prefix(monkeypatch, meta_wa_settings)
     attempt = make_attempt(phone="9876543210")
 
     with respx.mock(assert_all_called=True) as router:
-        route = router.post(META_URL).mock(return_value=Response(200, json={"message_id": "msg-123"}))
+        route = router.post(EXOTEL_URL).mock(
+            return_value=Response(200, json={"response": {"whatsapp": {"messages": [{"status": "success"}]}}})
+        )
         await run_for_attempt(monkeypatch, attempt)
 
-    assert request_json(route)["to"] == "919876543210"
+    assert request_json(route)["whatsapp"]["messages"][0]["to"] == "+919876543210"
 
 
 @pytest.mark.asyncio
@@ -178,33 +198,68 @@ async def test_invalid_phone_logs_skipped(monkeypatch, meta_wa_settings):
 
 
 @pytest.mark.asyncio
-async def test_meta_api_failure_logs_failed(monkeypatch, meta_wa_settings):
+async def test_exotel_failure_falls_back_to_meta(monkeypatch, meta_wa_settings):
+    """When Exotel fails, Meta direct is tried as fallback."""
     attempt = make_attempt()
 
     with respx.mock(assert_all_called=True) as router:
-        router.post(META_URL).mock(return_value=Response(500, json={"error": "down"}))
+        router.post(EXOTEL_URL).mock(return_value=Response(500, json={"error": "exotel down"}))
+        router.post(META_URL).mock(return_value=Response(200, json={"message_id": "msg-123"}))
         db = await run_for_attempt(monkeypatch, attempt)
 
-    assert db.rows[-1].status == WhatsAppLogStatus.failed
-    assert "Meta Cloud API failed with status 500" in db.rows[-1].error_message
+    assert db.rows[-1].status == WhatsAppLogStatus.sent
 
 
 @pytest.mark.asyncio
-async def test_meta_retry_on_failure(monkeypatch, meta_wa_settings):
+async def test_both_providers_failure_logs_failed(monkeypatch, meta_wa_settings):
+    """When BOTH Exotel and Meta fail, log as failed with Exotel error (primary)."""
     attempt = make_attempt()
 
     with respx.mock(assert_all_called=True) as router:
-        route = router.post(META_URL).mock(
-            side_effect=[
-                Response(500, json={"error": "down"}),
-                Response(200, json={"message_id": "msg-123"}),
-            ]
-        )
+        router.post(EXOTEL_URL).mock(return_value=Response(500, json={"error": "exotel down"}))
+        router.post(META_URL).mock(return_value=Response(500, json={"error": "meta down"}))
         db = await run_for_attempt(monkeypatch, attempt)
 
-    assert len(route.calls) == 2
+    assert db.rows[-1].status == WhatsAppLogStatus.failed
+    assert "Exotel WhatsApp failed with status 500" in db.rows[-1].error_message
+
+
+@pytest.mark.asyncio
+async def test_send_retry_on_failure(monkeypatch, meta_wa_settings):
+    """When the first attempt fails on both providers, the retry kicks in."""
+    attempt = make_attempt()
+
+    with respx.mock(assert_all_called=True) as router:
+        exotel_route = router.post(EXOTEL_URL).mock(
+            side_effect=[
+                Response(500, json={"error": "exotel down"}),
+                Response(200, json={"response": {"whatsapp": {"messages": [{"status": "success"}]}}}),
+            ]
+        )
+        router.post(META_URL).mock(return_value=Response(500, json={"error": "meta down"}))
+        db = await run_for_attempt(monkeypatch, attempt)
+
+    assert len(exotel_route.calls) == 2
     assert db.rows[0].status == WhatsAppLogStatus.failed
     assert db.rows[-1].status == WhatsAppLogStatus.sent
+
+
+@pytest.mark.asyncio
+async def test_duplicate_webhook_event_sends_only_once(monkeypatch, meta_wa_settings):
+    """Retell fires several webhook events per call — only one WhatsApp send should happen."""
+    attempt = make_attempt()
+
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(EXOTEL_URL).mock(
+            return_value=Response(200, json={"response": {"whatsapp": {"messages": [{"status": "success"}]}}})
+        )
+        db = await run_for_attempt(monkeypatch, attempt)
+        # Second webhook event for the same attempt — same db with the sent log present
+        await run_for_attempt(monkeypatch, attempt, db=db)
+
+    assert len(route.calls) == 1
+    sent_logs = [r for r in db.rows if r.status == WhatsAppLogStatus.sent]
+    assert len(sent_logs) == 1
 
 
 def test_phone_format_helpers():

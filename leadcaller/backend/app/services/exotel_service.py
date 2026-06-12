@@ -14,6 +14,63 @@ from app.models import CrmSyncLog, Lead
 
 logger = logging.getLogger(__name__)
 
+
+async def fetch_real_inbound_caller_phone(retell_sip_number: str | None = None) -> str | None:
+    """Return the From phone of the most recent inbound call to our Retell SIP number.
+
+    When a customer dials our ExoPhone, Exotel bridges to Retell SIP using OUR
+    ExoPhone as the SIP From — so Retell's webhook reports our own number as the
+    caller. The real customer phone is only retrievable from Exotel's Call
+    resource via the bridged parent call. Inbound calls are rare and we only
+    do this lookup after the call ends, so a single API hit is fine.
+    """
+    settings = get_settings()
+    api_key = settings.EXOTEL_API_KEY or ""
+    api_token = settings.EXOTEL_API_TOKEN or ""
+    account_sid = settings.EXOTEL_ACCOUNT_SID or ""
+    subdomain = settings.EXOTEL_SUBDOMAIN or "api.exotel.com"
+    if not all([api_key, api_token, account_sid]):
+        logger.warning("[ExotelCaller] Exotel credentials missing — cannot resolve real caller phone")
+        return None
+
+    to_param = retell_sip_number or settings.RETELL_FROM_NUMBER or ""
+    to_digits = "".join(c for c in to_param if c.isdigit())[-10:]
+    if not to_digits:
+        return None
+
+    url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls.json?Direction=inbound&PageSize=10"
+    try:
+        async with httpx.AsyncClient(auth=(api_key, api_token), timeout=8.0) as client:
+            response = await client.get(url)
+        if response.status_code >= 400:
+            logger.warning("[ExotelCaller] list calls failed %s: %s", response.status_code, response.text[:200])
+            return None
+        data = response.json()
+    except Exception as exc:
+        logger.warning("[ExotelCaller] list calls exception: %s", exc)
+        return None
+
+    calls = data.get("Calls") or data.get("Call") or []
+    if isinstance(calls, dict):
+        calls = [calls]
+
+    for call in calls:
+        to_str = "".join(c for c in str(call.get("To") or "") if c.isdigit())
+        if not to_str.endswith(to_digits):
+            continue
+        from_raw = str(call.get("From") or "").strip()
+        if not from_raw:
+            continue
+        formatted = format_phone_number(from_raw)
+        logger.info(
+            "[ExotelCaller] Resolved real caller phone=%s via Exotel CallSid=%s",
+            formatted, call.get("Sid"),
+        )
+        return formatted
+
+    logger.info("[ExotelCaller] No recent inbound calls to=%s found in Exotel", to_digits)
+    return None
+
 # ── In-memory cache for pending outbound bridge calls ──
 # Populated by connect_exotel_call_with_retell_ai(), consumed by the Retell
 # inbound webhook handler so it can respond instantly without DB roundtrips.

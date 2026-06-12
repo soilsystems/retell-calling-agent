@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     SCHEDULER_ENABLED: bool = True
 
+    # Comma-separated list of additional allowed CORS origins (e.g. Vercel deploys).
+    # Local dev origins are always allowed.
+    CORS_ALLOW_ORIGINS: str = ""
+    # Regex matching allowed origins. Default permits any *.vercel.app preview/prod URL.
+    CORS_ALLOW_ORIGIN_REGEX: str = r"https://.*\.vercel\.app"
+
 
 @lru_cache
 def get_settings() -> Settings:

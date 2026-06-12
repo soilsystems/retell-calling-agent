@@ -28,6 +28,9 @@ import {
 import { RetellWebClient } from "retell-client-js-sdk";
 import "./styles.css";
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+const api = (path: string) => `${API_BASE}${path}`;
+
 type IconComponent = React.ElementType<{ size?: number }>;
 
 type Summary = {
@@ -210,7 +213,7 @@ function useDashboardData() {
     setError(null);
     try {
       setSyncing(true);
-      const syncRes = await fetch("/admin/zoho/sync", { method: "POST" });
+      const syncRes = await fetch(api("/admin/zoho/sync"), { method: "POST" });
       if (!syncRes.ok) throw new Error(`/admin/zoho/sync returned ${syncRes.status}`);
       setLastSyncedAt(new Date().toISOString());
 
@@ -224,14 +227,14 @@ function useDashboardData() {
         followupsRes,
         syncLogsRes
       ] = await Promise.all([
-        fetch("/health"),
-        fetch("/admin/summary"),
-        fetch("/admin/leads"),
-        fetch("/admin/call-jobs"),
-        fetch("/admin/call-attempts"),
-        fetch("/admin/webhook-events"),
-        fetch("/admin/followups"),
-        fetch("/admin/crm-sync-logs")
+        fetch(api("/health")),
+        fetch(api("/admin/summary")),
+        fetch(api("/admin/leads")),
+        fetch(api("/admin/call-jobs")),
+        fetch(api("/admin/call-attempts")),
+        fetch(api("/admin/webhook-events")),
+        fetch(api("/admin/followups")),
+        fetch(api("/admin/crm-sync-logs"))
       ]);
 
       for (const response of [
@@ -313,7 +316,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
     setCallState("connecting");
     setError(null);
     try {
-      const res = await fetch(`/admin/leads/${lead.id}/call`, {
+      const res = await fetch(api(`/admin/leads/${lead.id}/call`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "human", agent_phone: phone.trim() })
@@ -331,7 +334,7 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
     setCallState("connecting");
     setError(null);
     try {
-      const res = await fetch(`/admin/leads/${lead.id}/call`, {
+      const res = await fetch(api(`/admin/leads/${lead.id}/call`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "exotel" })
@@ -940,7 +943,7 @@ function JobsTable({ jobs, onRefresh }: { jobs: CallJob[]; onRefresh: () => void
   const trigger = async (id: string) => {
     setBusyId(id);
     try {
-      const response = await fetch(`/admin/call-jobs/${id}/trigger`, { method: "POST" });
+      const response = await fetch(api(`/admin/call-jobs/${id}/trigger`), { method: "POST" });
       if (!response.ok) throw new Error(await response.text());
       await onRefresh();
     } finally {
@@ -1141,7 +1144,7 @@ function WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
     setErrorMsg(null);
     setSuccessMsg(null);
     try {
-      const res = await fetch("/whatsapp/send-nudge", {
+      const res = await fetch(api("/whatsapp/send-nudge"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lead_id: lead.id, nudge_type: type })
@@ -1162,7 +1165,7 @@ function WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
     setErrorMsg(null);
     setSuccessMsg(null);
     try {
-      const res = await fetch("/whatsapp/send-custom", {
+      const res = await fetch(api("/whatsapp/send-custom"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: lead.phone, text: customText })
@@ -1290,7 +1293,7 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
     setError(null);
     setSuccess(null);
     try {
-      const res = await fetch("/whatsapp/send-template", {
+      const res = await fetch(api("/whatsapp/send-template"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone, lead_name: name, template_type: template })

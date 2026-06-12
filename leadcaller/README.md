@@ -1,6 +1,6 @@
 # LeadCaller
 
-LeadCaller is a production-ready AI lead qualification backend built with FastAPI, async SQLAlchemy, Supabase Postgres, Retell AI outbound calls, and Zoho CRM sync.
+LeadCaller is a production-ready AI lead qualification system built with FastAPI, async SQLAlchemy, Supabase Postgres, Retell AI outbound/inbound calls, Zoho CRM sync, and WhatsApp follow-ups via Exotel.
 
 ## Features
 
@@ -9,16 +9,55 @@ LeadCaller is a production-ready AI lead qualification backend built with FastAP
 - Indian mobile validation for Zoho leads.
 - Business-hour aware scheduling for IST, Monday through Saturday, 9:00 to 19:00.
 - Retell outbound call creation with dynamic variables.
+- Inbound call handling — matches existing lead or creates new one.
+- Per-call language override (English / Hindi / Kannada) via Retell agent override.
 - Retry scheduling for no-answer, busy, and failed calls.
 - Zoho CRM lead update and follow-up task creation.
+- Post-call WhatsApp brochure delivery via Exotel (Meta fallback).
+- Race-safe dedup for double-send prevention.
 - Alembic migration with Postgres enums, indexes, JSONB, RLS policies, and campaign metrics support.
 - Docker and docker-compose for local development.
+- Operations dashboard deployed on Vercel.
 
-## Quick Start
+## Starting the server
+
+From the repo root, run:
 
 ```bash
-cp .env.example .env
-docker compose up --build
+./start-dev.sh
+```
+
+This starts the FastAPI backend and the ngrok tunnel in one command. When both are up, it prints:
+
+```
+✓ Backend running on http://localhost:8000
+✓ Tunnel running at https://dweller-tinkling-mutiny.ngrok-free.dev
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Dashboard → https://leadcaller-dashboard.vercel.app
+  Backend   → https://dweller-tinkling-mutiny.ngrok-free.dev
+  Local     → http://localhost:8000
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Press `Ctrl+C` to stop everything.
+
+The dashboard at **https://leadcaller-dashboard.vercel.app** is publicly accessible — anyone on the team with the link can open it while the server is running. No login required.
+
+**Requirements before running:**
+- Python virtualenv at `leadcaller/backend/.venv` (run `python -m venv .venv && pip install -r requirements.txt` once)
+- `leadcaller/backend/.env` populated (copy from `.env.example`)
+- ngrok installed and authenticated (`ngrok config add-authtoken <token>`)
+
+## Manual start (alternative)
+
+```bash
+# Terminal 1 — backend
+cd leadcaller/backend && source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Terminal 2 — ngrok
+ngrok http --domain=dweller-tinkling-mutiny.ngrok-free.dev 8000
 ```
 
 The API will be available at `http://localhost:8000`.

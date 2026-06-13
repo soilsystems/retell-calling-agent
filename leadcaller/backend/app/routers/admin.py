@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import httpx
@@ -90,8 +90,21 @@ async def summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         select(func.count(CallAttempt.id)).where(CallAttempt.status.in_(["answered", "completed"]))
     )
     calls_made = await db.scalar(select(func.count(CallAttempt.id)))
-    webhook_backlog = await db.scalar(select(func.count(WebhookEvent.id)).where(WebhookEvent.processed.is_(False)))
-    crm_failures = await db.scalar(select(func.count(CrmSyncLog.id)).where(CrmSyncLog.success.is_(False)))
+    # Health metrics reflect RECENT, actionable state — not all-time history.
+    # An all-time failure count never goes down and buries real current issues
+    # under old noise. A rolling 24h window surfaces what actually needs
+    # attention now; older records stay in the DB for audit/history views.
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    webhook_backlog = await db.scalar(
+        select(func.count(WebhookEvent.id))
+        .where(WebhookEvent.processed.is_(False))
+        .where(WebhookEvent.received_at >= recent_cutoff)
+    )
+    crm_failures = await db.scalar(
+        select(func.count(CrmSyncLog.id))
+        .where(CrmSyncLog.success.is_(False))
+        .where(CrmSyncLog.synced_at >= recent_cutoff)
+    )
 
     total_leads = int(total_leads or 0)
     hot_leads = int(hot_leads or 0)

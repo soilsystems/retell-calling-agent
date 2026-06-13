@@ -447,6 +447,22 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
         if caller_requirement or attempt.summary:
             fields["Description"] = str(caller_requirement or attempt.summary)[:32000]
 
+    # Real Zoho CRM record IDs are purely numeric. Locally-created or simulated
+    # leads (e.g. inbound calls, test/Meta-sim leads like "meta-wexora-...") have
+    # synthetic IDs that don't exist in Zoho — a PATCH would always 404. Skip
+    # those cleanly instead of logging a hard failure that alarms the dashboard.
+    if not lead.zoho_lead_id or not str(lead.zoho_lead_id).isdigit():
+        logger.info(
+            "Skipping Zoho update for call_attempt_id=%s — lead has no real Zoho ID (%s)",
+            call_attempt_id, lead.zoho_lead_id,
+        )
+        db.add(CrmSyncLog(
+            lead_id=lead.id, operation="update_lead_ai_call", success=True,
+            error_message="skipped: lead not backed by a real Zoho record",
+        ))
+        await db.commit()
+        return
+
     try:
         response = await _request_with_retry(
             "PATCH",
@@ -457,21 +473,40 @@ async def sync_to_zoho(call_attempt_id: uuid.UUID, db: AsyncSession | None = Non
         response.raise_for_status()
         db.add(CrmSyncLog(lead_id=lead.id, operation="update_lead_ai_call", success=True))
         await db.commit()
-    except Exception as exc:
-        if retry_once:
-            await asyncio.sleep(60)
-            await sync_to_zoho(call_attempt_id, db, retry_once=False)
-            return
-        db.add(
-            CrmSyncLog(
-                lead_id=lead.id,
-                operation="update_lead_ai_call",
-                success=False,
-                error_message=str(exc),
+    except httpx.HTTPStatusError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # The Zoho lead no longer exists (deleted/merged). Retrying won't
+            # help — record as skipped, not a failure.
+            logger.info(
+                "Zoho lead %s not found (404) for call_attempt_id=%s — skipping",
+                lead.zoho_lead_id, call_attempt_id,
             )
+            db.add(CrmSyncLog(
+                lead_id=lead.id, operation="update_lead_ai_call", success=True,
+                error_message="skipped: Zoho lead not found (404)",
+            ))
+            await db.commit()
+            return
+        await _log_zoho_sync_failure(call_attempt_id, lead, db, exc, retry_once)
+    except Exception as exc:
+        await _log_zoho_sync_failure(call_attempt_id, lead, db, exc, retry_once)
+
+
+async def _log_zoho_sync_failure(call_attempt_id, lead, db, exc, retry_once) -> None:
+    if retry_once:
+        await asyncio.sleep(60)
+        await sync_to_zoho(call_attempt_id, db, retry_once=False)
+        return
+    db.add(
+        CrmSyncLog(
+            lead_id=lead.id,
+            operation="update_lead_ai_call",
+            success=False,
+            error_message=str(exc),
         )
-        await db.commit()
-        logger.exception("Zoho lead sync failed for call_attempt_id=%s", call_attempt_id)
+    )
+    await db.commit()
+    logger.exception("Zoho lead sync failed for call_attempt_id=%s", call_attempt_id)
 
 
 async def update_zoho_whatsapp_status(

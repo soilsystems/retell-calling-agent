@@ -145,6 +145,44 @@ async def test_callback_requested_creates_new_job():
 
 
 @pytest.mark.asyncio
+async def test_callback_not_blocked_by_stale_job():
+    """A stuck/old callback job must NOT block a fresh callback request — the
+    dedup query filters by a ±5min window around the new scheduled time, so a
+    far-off stale job won't be returned and a new job is created."""
+    lead_id = uuid4()
+    attempt = SimpleNamespace(id=uuid4(), call_job=SimpleNamespace(lead_id=lead_id))
+    rows = []
+    captured = {}
+
+    class Db:
+        def add(self, row):
+            rows.append(row)
+
+        async def execute(self, stmt):
+            captured["stmt"] = stmt  # the windowed dedup query — returns nothing
+
+            class EmptyResult:
+                def scalar_one_or_none(self):
+                    return None
+
+            return EmptyResult()
+
+        async def commit(self):
+            return None
+
+    # callback "in 2 minutes" — a stale job days ago is far outside the window.
+    await retell_service._schedule_callback_if_requested(
+        attempt,
+        {"callback_required": True, "callback_time": "after 2 minutes"},
+        Db(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0].trigger_reason == "callback_requested"
+    assert rows[0].status == CallJobStatus.pending
+
+
+@pytest.mark.asyncio
 async def test_outside_business_hours_schedules_next_slot(monkeypatch):
     now = datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
     next_slot = datetime(2026, 6, 6, 3, 30, tzinfo=timezone.utc)

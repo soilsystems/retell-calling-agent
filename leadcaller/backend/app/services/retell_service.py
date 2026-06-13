@@ -124,15 +124,29 @@ async def _schedule_callback_if_requested(
         logger.warning("Invalid callback_time for call_attempt_id=%s: %s", attempt.id, callback_time)
         return
 
+    # Dedup ONLY against a genuine duplicate of THIS callback request — i.e. a
+    # still-pending callback scheduled at roughly the same time (the call_ended
+    # and call_analyzed events both run this). We must NOT block on stale or
+    # stuck jobs: an in_progress callback that never completed, or a long-past
+    # pending one, would otherwise permanently prevent new callbacks for the
+    # lead (observed: a 4-day-old stuck in_progress job swallowed a fresh
+    # callback request).
+    target = _ensure_aware_utc(scheduled_at)
+    window_start = target - timedelta(minutes=5)
+    window_end = target + timedelta(minutes=5)
     existing_callback = await db.execute(
         select(CallJob)
         .where(CallJob.lead_id == attempt.call_job.lead_id)
         .where(CallJob.trigger_reason == "callback_requested")
-        .where(CallJob.status.in_([CallJobStatus.pending, CallJobStatus.in_progress]))
+        .where(CallJob.status == CallJobStatus.pending)
+        .where(CallJob.scheduled_at >= window_start)
+        .where(CallJob.scheduled_at <= window_end)
         .limit(1)
     )
     if existing_callback.scalar_one_or_none():
-        logger.info("Callback job already exists for lead_id=%s", attempt.call_job.lead_id)
+        logger.info(
+            "Duplicate callback for lead_id=%s near %s — skipping", attempt.call_job.lead_id, target
+        )
         return
 
     call_job = CallJob(

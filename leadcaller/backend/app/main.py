@@ -77,17 +77,26 @@ app.add_middleware(
 )
 
 
+# High-frequency dashboard read endpoints — don't spam the logs with these.
+_QUIET_PATH_PREFIXES = ("/admin/", "/health")
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info("[Request] %s %s", request.method, request.url.path)
-    if request.method == "POST":
-        headers = dict(request.headers)
-        for key in ("authorization", "cookie", "x-hub-signature-256"):
-            if key in headers:
-                headers[key] = "***"
-        logger.info("[Request] Headers: %s", headers)
+    path = request.url.path
+    quiet = request.method == "GET" and path.startswith(_QUIET_PATH_PREFIXES)
+    if not quiet:
+        logger.info("[Request] %s %s", request.method, path)
+        # Only dump headers for webhook endpoints (useful for debugging providers).
+        if request.method == "POST" and path.startswith("/webhooks"):
+            headers = dict(request.headers)
+            for key in ("authorization", "cookie", "x-hub-signature-256"):
+                if key in headers:
+                    headers[key] = "***"
+            logger.info("[Request] Headers: %s", headers)
     response = await call_next(request)
-    logger.info("[Response] %s -> %s", request.url.path, response.status_code)
+    if not quiet:
+        logger.info("[Response] %s -> %s", path, response.status_code)
     return response
 
 

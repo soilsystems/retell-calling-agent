@@ -70,7 +70,10 @@ async def _resolve_real_inbound_caller(payload: RetellCallCompletedWebhook) -> s
     """
     from app.services.exotel_service import fetch_real_inbound_caller_phone
     try:
-        return await fetch_real_inbound_caller_phone(payload.to_number)
+        return await fetch_real_inbound_caller_phone(
+            payload.to_number,
+            call_started_at=payload.started_at,
+        )
     except Exception as exc:
         logger.warning("Failed to resolve real inbound caller phone: %s", exc)
         return None

@@ -126,3 +126,84 @@ def test_format_phone_number():
     assert format_phone_number("+91 98765-43210") == "+919876543210"
     assert format_phone_number("+9109876543210") == "+919876543210"
     assert format_phone_number("  98765  43210  ") == "+919876543210"
+
+
+def _resolver_settings():
+    return SimpleNamespace(
+        EXOTEL_API_KEY="api-key",
+        EXOTEL_API_TOKEN="api-token",
+        EXOTEL_ACCOUNT_SID="account-sid",
+        EXOTEL_SUBDOMAIN="api.exotel.com",
+        EXOTEL_CALLER_ID="08046376848",
+        EXOTEL_PHONE_NUMBER="08046376848",
+        RETELL_FROM_NUMBER="+918046376848",
+        EXOTEL_TIMEZONE="Asia/Kolkata",
+    )
+
+
+# Two overlapping inbound calls to our number: suraj earlier, wexora later.
+_INBOUND_CALLS_JSON = {
+    "Calls": [
+        {"Sid": "wexora-sid", "From": "06361232277", "To": "08046376848", "StartTime": "2026-06-13 10:08:37"},
+        {"Sid": "suraj-sid", "From": "09137500132", "To": "08046376848", "StartTime": "2026-06-13 10:01:06"},
+        {"Sid": "exophone-leg", "From": "08046376848", "To": "08046376848", "StartTime": "2026-06-13 10:08:40"},
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_resolver_correlates_by_call_start_time(monkeypatch):
+    """A Retell call starting ~10s after the wexora Exotel leg must resolve to
+    wexora — NOT the most-recent-by-list-order nor the earlier suraj call."""
+    from datetime import datetime, timezone
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+
+    monkeypatch.setattr("app.services.exotel_service.get_settings", _resolver_settings)
+
+    url = "https://api.exotel.com/v1/Accounts/account-sid/Calls.json"
+    # Retell start = wexora Exotel StartTime (04:38:37 UTC) + 10s
+    retell_start = datetime(2026, 6, 13, 4, 38, 47, tzinfo=timezone.utc)
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__startswith=url).mock(return_value=Response(200, json=_INBOUND_CALLS_JSON))
+        result = await fetch_real_inbound_caller_phone("+918046376848", call_started_at=retell_start)
+
+    assert result == "+916361232277"  # wexora, correctly correlated by time
+
+
+@pytest.mark.asyncio
+async def test_resolver_excludes_own_exophone(monkeypatch):
+    """The resolver must never return our own ExoPhone as the caller."""
+    from datetime import datetime, timezone
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+
+    monkeypatch.setattr("app.services.exotel_service.get_settings", _resolver_settings)
+    url = "https://api.exotel.com/v1/Accounts/account-sid/Calls.json"
+    only_own = {"Calls": [{"Sid": "leg", "From": "08046376848", "To": "08046376848", "StartTime": "2026-06-13 10:08:40"}]}
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__startswith=url).mock(return_value=Response(200, json=only_own))
+        result = await fetch_real_inbound_caller_phone(
+            "+918046376848", call_started_at=datetime(2026, 6, 13, 4, 38, 47, tzinfo=timezone.utc)
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_rejects_far_off_match(monkeypatch):
+    """If no Exotel call is within the sanity window, return None rather than a
+    wrong number (the right record may not be listed yet)."""
+    from datetime import datetime, timezone
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+
+    monkeypatch.setattr("app.services.exotel_service.get_settings", _resolver_settings)
+    url = "https://api.exotel.com/v1/Accounts/account-sid/Calls.json"
+    # Retell start is hours away from any listed call.
+    retell_start = datetime(2026, 6, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__startswith=url).mock(return_value=Response(200, json=_INBOUND_CALLS_JSON))
+        result = await fetch_real_inbound_caller_phone("+918046376848", call_started_at=retell_start)
+
+    assert result is None

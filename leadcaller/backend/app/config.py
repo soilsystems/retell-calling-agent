@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     EXOTEL_CALLER_ID: str | None = None
     EXOTEL_EXOML_URL: str | None = None
     EXOTEL_STATUS_CALLBACK: str | None = None
+    # Timezone Exotel reports Call StartTime/DateCreated in (account-local, no offset).
+    EXOTEL_TIMEZONE: str = "Asia/Kolkata"
     EXOTEL_CALL_TYPE: Literal["trans", "promo"] = "trans"
 
     # Exotel WhatsApp Business API

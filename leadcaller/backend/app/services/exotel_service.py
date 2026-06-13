@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 from xml.etree import ElementTree
@@ -15,14 +15,55 @@ from app.models import CrmSyncLog, Lead
 logger = logging.getLogger(__name__)
 
 
-async def fetch_real_inbound_caller_phone(retell_sip_number: str | None = None) -> str | None:
-    """Return the From phone of the most recent inbound call to our Retell SIP number.
+def _parse_exotel_start_time(value: str | None) -> datetime | None:
+    """Parse an Exotel StartTime/DateCreated string into a UTC datetime.
+
+    Exotel returns these in the account's local timezone with no offset, e.g.
+    "2026-06-13 10:08:37". We interpret them in EXOTEL_TIMEZONE (default IST)
+    and convert to UTC so they can be compared against the Retell call start.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            naive = datetime.strptime(text[:19], fmt)
+            break
+        except ValueError:
+            naive = None
+    if naive is None:
+        return None
+    try:
+        import pytz
+
+        tz_name = getattr(get_settings(), "EXOTEL_TIMEZONE", None) or "Asia/Kolkata"
+        local = pytz.timezone(tz_name).localize(naive)
+        return local.astimezone(timezone.utc)
+    except Exception:
+        # Fallback: assume IST (+5:30) if pytz/tz lookup fails.
+        return naive.replace(tzinfo=timezone(_IST_OFFSET)).astimezone(timezone.utc)
+
+
+_IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+async def fetch_real_inbound_caller_phone(
+    retell_sip_number: str | None = None,
+    call_started_at: datetime | None = None,
+) -> str | None:
+    """Return the real customer From phone for a specific inbound call.
 
     When a customer dials our ExoPhone, Exotel bridges to Retell SIP using OUR
     ExoPhone as the SIP From — so Retell's webhook reports our own number as the
     caller. The real customer phone is only retrievable from Exotel's Call
-    resource via the bridged parent call. Inbound calls are rare and we only
-    do this lookup after the call ends, so a single API hit is fine.
+    resource.
+
+    Correlation: Exotel may list several recent inbound calls to our number. We
+    must pick the ONE that corresponds to this Retell call, not merely the most
+    recent — otherwise overlapping test calls get cross-wired. When
+    call_started_at is given we select the inbound call whose StartTime is
+    closest to it (Exotel's leg starts ~5-15s before Retell's). Without a
+    timestamp we fall back to the most recent matching call.
     """
     settings = get_settings()
     api_key = settings.EXOTEL_API_KEY or ""
@@ -38,7 +79,11 @@ async def fetch_real_inbound_caller_phone(retell_sip_number: str | None = None) 
     if not to_digits:
         return None
 
-    url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls.json?Direction=inbound&PageSize=10"
+    # Our own ExoPhone — must never be returned as the "real caller".
+    own = settings.EXOTEL_CALLER_ID or settings.EXOTEL_PHONE_NUMBER or ""
+    own_digits = "".join(c for c in own if c.isdigit())[-10:]
+
+    url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls.json?Direction=inbound&PageSize=20"
     try:
         async with httpx.AsyncClient(auth=(api_key, api_token), timeout=8.0) as client:
             response = await client.get(url)
@@ -54,22 +99,57 @@ async def fetch_real_inbound_caller_phone(retell_sip_number: str | None = None) 
     if isinstance(calls, dict):
         calls = [calls]
 
+    # Keep only inbound calls TO our number FROM a real (non-ExoPhone) caller.
+    candidates = []
     for call in calls:
         to_str = "".join(c for c in str(call.get("To") or "") if c.isdigit())
         if not to_str.endswith(to_digits):
             continue
         from_raw = str(call.get("From") or "").strip()
-        if not from_raw:
+        from_digits = "".join(c for c in from_raw if c.isdigit())[-10:]
+        if not from_digits:
             continue
-        formatted = format_phone_number(from_raw)
-        logger.info(
-            "[ExotelCaller] Resolved real caller phone=%s via Exotel CallSid=%s",
-            formatted, call.get("Sid"),
-        )
-        return formatted
+        if own_digits and from_digits == own_digits:
+            continue  # our own ExoPhone leg, not the customer
+        candidates.append(call)
 
-    logger.info("[ExotelCaller] No recent inbound calls to=%s found in Exotel", to_digits)
-    return None
+    if not candidates:
+        logger.info("[ExotelCaller] No recent inbound calls to=%s found in Exotel", to_digits)
+        return None
+
+    chosen = None
+    if call_started_at is not None:
+        ref = call_started_at if call_started_at.tzinfo else call_started_at.replace(tzinfo=timezone.utc)
+        best_delta = None
+        for call in candidates:
+            started = _parse_exotel_start_time(call.get("StartTime") or call.get("DateCreated"))
+            if started is None:
+                continue
+            delta = abs((ref - started).total_seconds())
+            if best_delta is None or delta < best_delta:
+                best_delta, chosen = delta, call
+        # Sanity window: the matched call should be within 3 minutes of the
+        # Retell start. If nothing is close, the correct Exotel record may not
+        # be listed yet — refuse rather than return a wrong number.
+        if chosen is not None and best_delta is not None and best_delta > 180:
+            logger.warning(
+                "[ExotelCaller] closest inbound call is %ss from Retell start — too far, not trusting it",
+                int(best_delta),
+            )
+            chosen = None
+
+    if chosen is None and call_started_at is None:
+        chosen = candidates[0]  # most recent (no timestamp to correlate)
+
+    if chosen is None:
+        return None
+
+    formatted = format_phone_number(str(chosen.get("From") or "").strip())
+    logger.info(
+        "[ExotelCaller] Resolved real caller phone=%s via Exotel Sid=%s StartTime=%s (retell_start=%s)",
+        formatted, chosen.get("Sid"), chosen.get("StartTime"), call_started_at,
+    )
+    return formatted
 
 # ── In-memory cache for pending outbound bridge calls ──
 # Populated by connect_exotel_call_with_retell_ai(), consumed by the Retell

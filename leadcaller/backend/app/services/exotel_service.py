@@ -51,6 +51,8 @@ _IST_OFFSET = timedelta(hours=5, minutes=30)
 async def fetch_real_inbound_caller_phone(
     retell_sip_number: str | None = None,
     call_started_at: datetime | None = None,
+    max_attempts: int = 1,
+    retry_delay: float = 2.5,
 ) -> str | None:
     """Return the real customer From phone for a specific inbound call.
 
@@ -148,20 +150,21 @@ async def fetch_real_inbound_caller_phone(
         )
         return formatted, best_delta
 
-    # Exotel's Calls.json API lags a few seconds behind a just-ended call, so
-    # the correct inbound record may not appear on the first try. Retry with a
-    # short backoff until it shows up (only matters when correlating by time).
-    attempts = 4 if call_started_at is not None else 1
+    # Exotel's Calls.json API lags behind a just-ended call (observed 1-2 min),
+    # so the correct inbound record may not appear immediately. Callers that can
+    # afford to wait (a background task) pass a higher max_attempts to poll until
+    # it shows up; the latency-sensitive webhook path uses a single attempt.
+    attempts = max(1, max_attempts) if call_started_at is not None else 1
     for i in range(attempts):
         phone, best_delta = await _fetch_and_match()
         if phone:
             return phone
         if i < attempts - 1:
             logger.info(
-                "[ExotelCaller] inbound record not ready (closest delta=%ss) — retrying in 2.5s (%d/%d)",
-                int(best_delta) if best_delta is not None else None, i + 1, attempts - 1,
+                "[ExotelCaller] inbound record not ready (closest delta=%ss) — retrying in %ss (%d/%d)",
+                int(best_delta) if best_delta is not None else None, retry_delay, i + 1, attempts - 1,
             )
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(retry_delay)
 
     logger.warning("[ExotelCaller] Could not resolve real caller for to=%s after %d attempt(s)", to_digits, attempts)
     return None

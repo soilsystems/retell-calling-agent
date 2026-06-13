@@ -234,6 +234,8 @@ async def test_resolver_retries_until_record_appears(monkeypatch, _no_sleep):
 
     with respx.mock(assert_all_called=True) as router:
         router.get(url__startswith=url).mock(side_effect=[Response(200, json=empty), Response(200, json=ready)])
-        result = await fetch_real_inbound_caller_phone("+918046376848", call_started_at=retell_start)
+        result = await fetch_real_inbound_caller_phone(
+            "+918046376848", call_started_at=retell_start, max_attempts=2, retry_delay=0
+        )
 
     assert result == "+916361232277"

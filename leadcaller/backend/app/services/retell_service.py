@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import uuid
@@ -22,6 +23,7 @@ from app.models import (
     LanguagePreference,
     Lead,
     WebhookEvent,
+    WebhookSource,
 )
 from app.schemas.retell_schema import RetellCallCompletedWebhook, RetellStructuredData
 from app.utils.business_hours import get_next_business_day_at_10am, is_business_hours, next_business_slot
@@ -356,6 +358,7 @@ async def process_retell_completion(
     payload: RetellCallCompletedWebhook,
     webhook_event: WebhookEvent,
     db: AsyncSession,
+    resolved_caller_phone: str | None = None,
 ) -> CallAttempt | None:
     direction = CallDirection.inbound if payload.direction.lower() == "inbound" else CallDirection.outbound
     result = await db.execute(
@@ -377,26 +380,25 @@ async def process_retell_completion(
         if not lead and direction == CallDirection.inbound:
             # Exotel bridges inbound calls to Retell SIP using our ExoPhone as
             # the SIP From — so payload.from_number is OUR number, not the real
-            # caller's. Resolve the real caller phone via Exotel before the
-            # phone-based lead lookup, otherwise we end up sending the WhatsApp
-            # follow-up to our own business number.
-            real_caller_phone = await _resolve_real_inbound_caller(payload)
+            # caller's. The real caller is only retrievable from Exotel's Calls
+            # API, which lags 1-2 min behind a just-ended call. So the webhook
+            # path tries a single quick lookup; if it misses, a background task
+            # (resolve_inbound_and_followup) polls until the record appears and
+            # passes the result back here as resolved_caller_phone.
+            real_caller_phone = resolved_caller_phone or await _resolve_real_inbound_caller(payload)
             # NEVER fall back to payload.from_number — for Exotel-bridged inbound
             # calls that IS our own ExoPhone, which would create a self-lead and
-            # WhatsApp our own business number (EX_INVALID_REQUEST). If we can't
-            # resolve the real caller, skip lead creation entirely; the call is
-            # still recorded in Retell, just without a post-call follow-up.
+            # WhatsApp our own business number (EX_INVALID_REQUEST).
             if not real_caller_phone:
-                logger.warning(
-                    "Inbound call %s: could not resolve real caller phone — skipping lead creation "
-                    "and post-call follow-up (will not message our own ExoPhone)",
+                logger.info(
+                    "Inbound call %s: real caller not resolvable yet — deferring to background task",
                     payload.call_id,
                 )
-            else:
-                lead = (
-                    await _find_lead_by_phone(real_caller_phone, db)
-                    or await _create_inbound_lead(payload, real_caller_phone=real_caller_phone, db=db)
-                )
+                return None
+            lead = (
+                await _find_lead_by_phone(real_caller_phone, db)
+                or await _create_inbound_lead(payload, real_caller_phone=real_caller_phone, db=db)
+            )
 
         if lead:
             job_result = await db.execute(
@@ -473,6 +475,93 @@ async def process_retell_completion(
     await _update_inbound_lead_details(attempt.call_job.lead, attempt.structured_data or {}, db)
     await _schedule_callback_if_requested(attempt, attempt.structured_data or {}, db)
     return attempt
+
+
+# Inbound calls whose real-caller resolution is already being polled in the
+# background — prevents call_ended AND call_analyzed from each spawning a
+# multi-minute poll for the same call. Race-safe in single-threaded asyncio.
+_inbound_resolution_claims: set[str] = set()
+
+
+async def resolve_inbound_and_followup(call_id: str, raw_body: bytes) -> None:
+    """Background task: poll Exotel until the inbound call's real caller phone
+    propagates (the Calls API lags 1-2 min), then run the normal completion
+    processing and post-call follow-ups (Zoho sync + WhatsApp).
+
+    Queued by the webhook when an inbound completion couldn't resolve the caller
+    synchronously. Decoupled from the webhook response so Retell isn't blocked.
+    """
+    if call_id in _inbound_resolution_claims:
+        logger.info("[InboundResolve] already polling for call_id=%s — skipping", call_id)
+        return
+    if len(_inbound_resolution_claims) > 5000:
+        _inbound_resolution_claims.clear()
+    _inbound_resolution_claims.add(call_id)
+
+    from app.services.whatsapp_service import send_whatsapp_for_call
+    from app.services.zoho_service import sync_to_zoho
+
+    try:
+        payload = RetellCallCompletedWebhook.model_validate_json(raw_body)
+    except Exception as exc:
+        logger.warning("[InboundResolve] could not parse payload for call_id=%s: %s", call_id, exc)
+        _inbound_resolution_claims.discard(call_id)
+        return
+
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+
+    # Poll up to ~3 minutes (12 attempts × 15s) for the Exotel record to appear.
+    try:
+        phone = await fetch_real_inbound_caller_phone(
+            payload.to_number,
+            call_started_at=payload.started_at,
+            max_attempts=12,
+            retry_delay=15.0,
+        )
+    except Exception as exc:
+        logger.warning("[InboundResolve] resolver error for call_id=%s: %s", call_id, exc)
+        phone = None
+
+    if not phone:
+        logger.warning(
+            "[InboundResolve] gave up resolving real caller for call_id=%s — no follow-up sent", call_id
+        )
+        _inbound_resolution_claims.discard(call_id)
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # Re-attach the webhook event (created by the original request).
+            idem = retell_event_key(payload.call_id, raw_body)
+            webhook_event = (
+                await db.execute(select(WebhookEvent).where(WebhookEvent.idempotency_key == idem))
+            ).scalar_one_or_none()
+            if webhook_event is None:
+                webhook_event = WebhookEvent(
+                    source=WebhookSource.retell,
+                    event_type="call_completed",
+                    payload=json.loads(raw_body.decode("utf-8")),
+                    processed=False,
+                    idempotency_key=idem,
+                    received_at=_utcnow(),
+                )
+                db.add(webhook_event)
+                await db.commit()
+                await db.refresh(webhook_event)
+
+            attempt = await process_retell_completion(
+                payload, webhook_event, db, resolved_caller_phone=phone
+            )
+            if attempt:
+                logger.info(
+                    "[InboundResolve] resolved call_id=%s to %s — sending follow-up", call_id, phone
+                )
+                await send_whatsapp_for_call(attempt.id, db)
+                await sync_to_zoho(attempt.id)
+        except Exception as exc:
+            logger.warning("[InboundResolve] processing error for call_id=%s: %s", call_id, exc)
+        finally:
+            _inbound_resolution_claims.discard(call_id)
 
 
 async def run_scheduled_calls() -> None:

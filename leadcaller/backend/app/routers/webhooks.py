@@ -39,6 +39,7 @@ from app.call_scripts import (
 )
 from app.services.retell_service import (
     process_retell_completion,
+    resolve_inbound_and_followup,
     retell_event_key,
     schedule_retry,
     trigger_retell_call,
@@ -160,6 +161,15 @@ async def retell_call_completed(
             payload.event,
             attempt.id,
         )
+    elif call_over and (payload.direction or "").lower() == "inbound" and not (
+        (payload.metadata or {}).get("lead_id")
+    ):
+        # Inbound call whose real caller couldn't be resolved synchronously
+        # (Exotel's Calls API lags 1-2 min). Hand off to a background task that
+        # polls until the record appears, then runs the follow-up — without
+        # blocking this webhook response.
+        logger.info("Retell inbound %s: deferring caller resolution + follow-up to background", payload.call_id)
+        background_tasks.add_task(resolve_inbound_and_followup, payload.call_id, body)
 
     return JSONResponse(status_code=200, content={"status": "accepted"})
 

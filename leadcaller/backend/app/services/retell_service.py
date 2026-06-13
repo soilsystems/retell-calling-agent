@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 from app.call_scripts import LANGUAGE_ADAPTATION_INSTRUCTION  # noqa: E402 — re-export for backwards compat
 
+# Callback loop guard: at most this many auto-callbacks per lead within the
+# rolling window. Beyond this, callbacks stop auto-dialing (human follow-up).
+MAX_CALLBACKS_PER_WINDOW = 3
+MAX_CALLBACK_WINDOW_HOURS = 2
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -146,6 +151,26 @@ async def _schedule_callback_if_requested(
     if existing_callback.scalar_one_or_none():
         logger.info(
             "Duplicate callback for lead_id=%s near %s — skipping", attempt.call_job.lead_id, target
+        )
+        return
+
+    # Loop guard: a callback call can itself end with the caller requesting
+    # another callback, which would create an endless chain (call → callback →
+    # callback → ...). Cap auto-created callbacks per lead within a rolling
+    # window; beyond that, stop auto-dialing and leave it for a human to follow
+    # up, so a confused or looping caller can't be rung indefinitely.
+    recent_cutoff = _utcnow() - timedelta(hours=MAX_CALLBACK_WINDOW_HOURS)
+    recent_callbacks = await db.scalar(
+        select(func.count(CallJob.id))
+        .where(CallJob.lead_id == attempt.call_job.lead_id)
+        .where(CallJob.trigger_reason == "callback_requested")
+        .where(CallJob.created_at >= recent_cutoff)
+    )
+    if (recent_callbacks or 0) >= MAX_CALLBACKS_PER_WINDOW:
+        logger.warning(
+            "Callback loop guard: lead_id=%s already has %s callbacks in the last %sh — "
+            "not auto-scheduling another (needs human follow-up)",
+            attempt.call_job.lead_id, recent_callbacks, MAX_CALLBACK_WINDOW_HOURS,
         )
         return
 

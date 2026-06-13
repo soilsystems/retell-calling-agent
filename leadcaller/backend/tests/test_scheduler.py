@@ -113,35 +113,66 @@ async def test_busy_schedules_30_minutes(monkeypatch):
 
 
 @pytest.mark.asyncio
+class _CallbackDb:
+    """Minimal AsyncSession stub for _schedule_callback_if_requested.
+
+    `recent_count` is what db.scalar() (the loop-guard count query) returns.
+    """
+
+    def __init__(self, recent_count=0):
+        self.rows = []
+        self._recent_count = recent_count
+
+    def add(self, row):
+        self.rows.append(row)
+
+    async def execute(self, stmt):
+        class EmptyResult:
+            def scalar_one_or_none(self):
+                return None
+
+        return EmptyResult()
+
+    async def scalar(self, stmt):
+        return self._recent_count
+
+    async def commit(self):
+        return None
+
+
+@pytest.mark.asyncio
 async def test_callback_requested_creates_new_job():
     lead_id = uuid4()
     attempt = SimpleNamespace(id=uuid4(), call_job=SimpleNamespace(lead_id=lead_id))
-    rows = []
-
-    class Db:
-        def add(self, row):
-            rows.append(row)
-
-        async def execute(self, stmt):
-            class EmptyResult:
-                def scalar_one_or_none(self):
-                    return None
-
-            return EmptyResult()
-
-        async def commit(self):
-            return None
+    db = _CallbackDb(recent_count=0)
 
     await retell_service._schedule_callback_if_requested(
         attempt,
         {"callback_required": True, "callback_time": "2026-06-06T10:00:00+05:30"},
-        Db(),
+        db,
     )
 
-    assert len(rows) == 1
-    assert rows[0].lead_id == lead_id
-    assert rows[0].status == CallJobStatus.pending
-    assert rows[0].trigger_reason == "callback_requested"
+    assert len(db.rows) == 1
+    assert db.rows[0].lead_id == lead_id
+    assert db.rows[0].status == CallJobStatus.pending
+    assert db.rows[0].trigger_reason == "callback_requested"
+
+
+@pytest.mark.asyncio
+async def test_callback_loop_guard_blocks_runaway_chains():
+    """Once a lead has hit the per-window callback cap, no further auto-callback
+    is scheduled — prevents an endless call → callback → callback chain."""
+    lead_id = uuid4()
+    attempt = SimpleNamespace(id=uuid4(), call_job=SimpleNamespace(lead_id=lead_id))
+    db = _CallbackDb(recent_count=retell_service.MAX_CALLBACKS_PER_WINDOW)
+
+    await retell_service._schedule_callback_if_requested(
+        attempt,
+        {"callback_required": True, "callback_time": "after 2 minutes"},
+        db,
+    )
+
+    assert db.rows == []  # capped — nothing scheduled
 
 
 @pytest.mark.asyncio
@@ -151,35 +182,18 @@ async def test_callback_not_blocked_by_stale_job():
     far-off stale job won't be returned and a new job is created."""
     lead_id = uuid4()
     attempt = SimpleNamespace(id=uuid4(), call_job=SimpleNamespace(lead_id=lead_id))
-    rows = []
-    captured = {}
-
-    class Db:
-        def add(self, row):
-            rows.append(row)
-
-        async def execute(self, stmt):
-            captured["stmt"] = stmt  # the windowed dedup query — returns nothing
-
-            class EmptyResult:
-                def scalar_one_or_none(self):
-                    return None
-
-            return EmptyResult()
-
-        async def commit(self):
-            return None
+    db = _CallbackDb(recent_count=0)
 
     # callback "in 2 minutes" — a stale job days ago is far outside the window.
     await retell_service._schedule_callback_if_requested(
         attempt,
         {"callback_required": True, "callback_time": "after 2 minutes"},
-        Db(),
+        db,
     )
 
-    assert len(rows) == 1
-    assert rows[0].trigger_reason == "callback_requested"
-    assert rows[0].status == CallJobStatus.pending
+    assert len(db.rows) == 1
+    assert db.rows[0].trigger_reason == "callback_requested"
+    assert db.rows[0].status == CallJobStatus.pending
 
 
 @pytest.mark.asyncio

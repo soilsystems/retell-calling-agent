@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 from datetime import datetime, timedelta, timezone
@@ -84,72 +85,86 @@ async def fetch_real_inbound_caller_phone(
     own_digits = "".join(c for c in own if c.isdigit())[-10:]
 
     url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls.json?Direction=inbound&PageSize=20"
-    try:
-        async with httpx.AsyncClient(auth=(api_key, api_token), timeout=8.0) as client:
-            response = await client.get(url)
-        if response.status_code >= 400:
-            logger.warning("[ExotelCaller] list calls failed %s: %s", response.status_code, response.text[:200])
-            return None
-        data = response.json()
-    except Exception as exc:
-        logger.warning("[ExotelCaller] list calls exception: %s", exc)
-        return None
 
-    calls = data.get("Calls") or data.get("Call") or []
-    if isinstance(calls, dict):
-        calls = [calls]
+    async def _fetch_and_match() -> tuple[str | None, float | None]:
+        """Return (formatted_phone, best_delta_seconds). phone is None if no match."""
+        try:
+            async with httpx.AsyncClient(auth=(api_key, api_token), timeout=8.0) as client:
+                response = await client.get(url)
+            if response.status_code >= 400:
+                logger.warning("[ExotelCaller] list calls failed %s: %s", response.status_code, response.text[:200])
+                return None, None
+            data = response.json()
+        except Exception as exc:
+            logger.warning("[ExotelCaller] list calls exception: %s", exc)
+            return None, None
 
-    # Keep only inbound calls TO our number FROM a real (non-ExoPhone) caller.
-    candidates = []
-    for call in calls:
-        to_str = "".join(c for c in str(call.get("To") or "") if c.isdigit())
-        if not to_str.endswith(to_digits):
-            continue
-        from_raw = str(call.get("From") or "").strip()
-        from_digits = "".join(c for c in from_raw if c.isdigit())[-10:]
-        if not from_digits:
-            continue
-        if own_digits and from_digits == own_digits:
-            continue  # our own ExoPhone leg, not the customer
-        candidates.append(call)
+        calls = data.get("Calls") or data.get("Call") or []
+        if isinstance(calls, dict):
+            calls = [calls]
 
-    if not candidates:
-        logger.info("[ExotelCaller] No recent inbound calls to=%s found in Exotel", to_digits)
-        return None
-
-    chosen = None
-    if call_started_at is not None:
-        ref = call_started_at if call_started_at.tzinfo else call_started_at.replace(tzinfo=timezone.utc)
-        best_delta = None
-        for call in candidates:
-            started = _parse_exotel_start_time(call.get("StartTime") or call.get("DateCreated"))
-            if started is None:
+        # Keep only inbound calls TO our number FROM a real (non-ExoPhone) caller.
+        candidates = []
+        for call in calls:
+            to_str = "".join(c for c in str(call.get("To") or "") if c.isdigit())
+            if not to_str.endswith(to_digits):
                 continue
-            delta = abs((ref - started).total_seconds())
-            if best_delta is None or delta < best_delta:
-                best_delta, chosen = delta, call
-        # Sanity window: the matched call should be within 3 minutes of the
-        # Retell start. If nothing is close, the correct Exotel record may not
-        # be listed yet — refuse rather than return a wrong number.
-        if chosen is not None and best_delta is not None and best_delta > 180:
-            logger.warning(
-                "[ExotelCaller] closest inbound call is %ss from Retell start — too far, not trusting it",
-                int(best_delta),
+            from_raw = str(call.get("From") or "").strip()
+            from_digits = "".join(c for c in from_raw if c.isdigit())[-10:]
+            if not from_digits:
+                continue
+            if own_digits and from_digits == own_digits:
+                continue  # our own ExoPhone leg, not the customer
+            candidates.append(call)
+
+        if not candidates:
+            return None, None
+
+        chosen, best_delta = None, None
+        if call_started_at is not None:
+            ref = call_started_at if call_started_at.tzinfo else call_started_at.replace(tzinfo=timezone.utc)
+            for call in candidates:
+                started = _parse_exotel_start_time(call.get("StartTime") or call.get("DateCreated"))
+                if started is None:
+                    continue
+                delta = abs((ref - started).total_seconds())
+                if best_delta is None or delta < best_delta:
+                    best_delta, chosen = delta, call
+            # Sanity window: the matched call must be within 3 minutes of the
+            # Retell start, else the correct record likely isn't listed yet.
+            if chosen is not None and best_delta is not None and best_delta > 180:
+                return None, best_delta
+        else:
+            chosen = candidates[0]  # most recent (no timestamp to correlate)
+
+        if chosen is None:
+            return None, best_delta
+
+        formatted = format_phone_number(str(chosen.get("From") or "").strip())
+        logger.info(
+            "[ExotelCaller] Resolved real caller phone=%s via Exotel Sid=%s StartTime=%s (retell_start=%s, delta=%ss)",
+            formatted, chosen.get("Sid"), chosen.get("StartTime"), call_started_at,
+            int(best_delta) if best_delta is not None else None,
+        )
+        return formatted, best_delta
+
+    # Exotel's Calls.json API lags a few seconds behind a just-ended call, so
+    # the correct inbound record may not appear on the first try. Retry with a
+    # short backoff until it shows up (only matters when correlating by time).
+    attempts = 4 if call_started_at is not None else 1
+    for i in range(attempts):
+        phone, best_delta = await _fetch_and_match()
+        if phone:
+            return phone
+        if i < attempts - 1:
+            logger.info(
+                "[ExotelCaller] inbound record not ready (closest delta=%ss) — retrying in 2.5s (%d/%d)",
+                int(best_delta) if best_delta is not None else None, i + 1, attempts - 1,
             )
-            chosen = None
+            await asyncio.sleep(2.5)
 
-    if chosen is None and call_started_at is None:
-        chosen = candidates[0]  # most recent (no timestamp to correlate)
-
-    if chosen is None:
-        return None
-
-    formatted = format_phone_number(str(chosen.get("From") or "").strip())
-    logger.info(
-        "[ExotelCaller] Resolved real caller phone=%s via Exotel Sid=%s StartTime=%s (retell_start=%s)",
-        formatted, chosen.get("Sid"), chosen.get("StartTime"), call_started_at,
-    )
-    return formatted
+    logger.warning("[ExotelCaller] Could not resolve real caller for to=%s after %d attempt(s)", to_digits, attempts)
+    return None
 
 # ── In-memory cache for pending outbound bridge calls ──
 # Populated by connect_exotel_call_with_retell_ai(), consumed by the Retell

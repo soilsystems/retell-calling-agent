@@ -151,8 +151,16 @@ _INBOUND_CALLS_JSON = {
 }
 
 
+@pytest.fixture
+def _no_sleep(monkeypatch):
+    """Make the resolver's retry backoff instant in tests."""
+    async def _instant(_seconds):
+        return None
+    monkeypatch.setattr("app.services.exotel_service.asyncio.sleep", _instant)
+
+
 @pytest.mark.asyncio
-async def test_resolver_correlates_by_call_start_time(monkeypatch):
+async def test_resolver_correlates_by_call_start_time(monkeypatch, _no_sleep):
     """A Retell call starting ~10s after the wexora Exotel leg must resolve to
     wexora — NOT the most-recent-by-list-order nor the earlier suraj call."""
     from datetime import datetime, timezone
@@ -172,7 +180,7 @@ async def test_resolver_correlates_by_call_start_time(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolver_excludes_own_exophone(monkeypatch):
+async def test_resolver_excludes_own_exophone(monkeypatch, _no_sleep):
     """The resolver must never return our own ExoPhone as the caller."""
     from datetime import datetime, timezone
     from app.services.exotel_service import fetch_real_inbound_caller_phone
@@ -191,7 +199,7 @@ async def test_resolver_excludes_own_exophone(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolver_rejects_far_off_match(monkeypatch):
+async def test_resolver_rejects_far_off_match(monkeypatch, _no_sleep):
     """If no Exotel call is within the sanity window, return None rather than a
     wrong number (the right record may not be listed yet)."""
     from datetime import datetime, timezone
@@ -207,3 +215,25 @@ async def test_resolver_rejects_far_off_match(monkeypatch):
         result = await fetch_real_inbound_caller_phone("+918046376848", call_started_at=retell_start)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_retries_until_record_appears(monkeypatch, _no_sleep):
+    """Exotel's list API lags; the correct call shows up on a later retry."""
+    from datetime import datetime, timezone
+    from app.services.exotel_service import fetch_real_inbound_caller_phone
+
+    monkeypatch.setattr("app.services.exotel_service.get_settings", _resolver_settings)
+    url = "https://api.exotel.com/v1/Accounts/account-sid/Calls.json"
+    retell_start = datetime(2026, 6, 13, 4, 49, 59, tzinfo=timezone.utc)
+
+    # First call: only the stale old records (no close match). Second call: the
+    # fresh wexora record has propagated in.
+    empty = {"Calls": [{"Sid": "old", "From": "09137500132", "To": "08046376848", "StartTime": "2026-06-13 09:42:34"}]}
+    ready = {"Calls": [{"Sid": "new", "From": "06361232277", "To": "08046376848", "StartTime": "2026-06-13 10:19:59"}]}
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__startswith=url).mock(side_effect=[Response(200, json=empty), Response(200, json=ready)])
+        result = await fetch_real_inbound_caller_phone("+918046376848", call_started_at=retell_start)
+
+    assert result == "+916361232277"

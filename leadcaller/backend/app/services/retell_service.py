@@ -381,10 +381,22 @@ async def process_retell_completion(
             # phone-based lead lookup, otherwise we end up sending the WhatsApp
             # follow-up to our own business number.
             real_caller_phone = await _resolve_real_inbound_caller(payload)
-            lookup_phone = real_caller_phone or payload.from_number
-            lead = await _find_lead_by_phone(lookup_phone, db) or await _find_lead_by_phone(payload.to_number, db)
-            if not lead:
-                lead = await _create_inbound_lead(payload, real_caller_phone=real_caller_phone, db=db)
+            # NEVER fall back to payload.from_number — for Exotel-bridged inbound
+            # calls that IS our own ExoPhone, which would create a self-lead and
+            # WhatsApp our own business number (EX_INVALID_REQUEST). If we can't
+            # resolve the real caller, skip lead creation entirely; the call is
+            # still recorded in Retell, just without a post-call follow-up.
+            if not real_caller_phone:
+                logger.warning(
+                    "Inbound call %s: could not resolve real caller phone — skipping lead creation "
+                    "and post-call follow-up (will not message our own ExoPhone)",
+                    payload.call_id,
+                )
+            else:
+                lead = (
+                    await _find_lead_by_phone(real_caller_phone, db)
+                    or await _create_inbound_lead(payload, real_caller_phone=real_caller_phone, db=db)
+                )
 
         if lead:
             job_result = await db.execute(

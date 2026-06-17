@@ -31,3 +31,9 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# Runtime: user-uploaded WhatsApp media stored on the backend host
+leadcaller/backend/uploads/
+
+# Vercel
+.vercel/

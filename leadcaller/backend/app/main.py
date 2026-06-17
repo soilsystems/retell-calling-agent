@@ -1,17 +1,22 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.routers.admin import router as admin_router
 from app.routers.debug import router as debug_router
 from app.routers.meta_webhook import router as meta_router
 from app.routers.webhooks import router as webhooks_router
-from app.routers.whatsapp import router as whatsapp_router
+from app.routers import whatsapp
 from app.services.retell_service import run_scheduled_calls
+
+UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 settings = get_settings()
@@ -102,8 +107,10 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(admin_router)
 app.include_router(webhooks_router)
-app.include_router(whatsapp_router)
+app.include_router(whatsapp.router)
 app.include_router(meta_router, prefix="/webhooks/meta", tags=["Meta Webhook"])
+
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 if settings.ENVIRONMENT != "prod":
     app.include_router(debug_router)

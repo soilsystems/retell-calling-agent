@@ -34,6 +34,7 @@ class WebhookSource(StrEnum):
     zoho = "zoho"
     retell = "retell"
     meta = "meta"
+    whatsapp = "whatsapp"
 
 
 class FollowupStatus(StrEnum):
@@ -46,3 +47,19 @@ class WhatsAppLogStatus(StrEnum):
     sent = "sent"
     failed = "failed"
     skipped = "skipped"
+
+
+class WhatsAppMessageDirection(StrEnum):
+    inbound = "inbound"
+    outbound = "outbound"
+
+
+class WhatsAppMessageType(StrEnum):
+    text = "text"
+    image = "image"
+    document = "document"
+    video = "video"
+    audio = "audio"
+    location = "location"
+    template = "template"
+    other = "other"

@@ -23,7 +23,11 @@ import {
   Server,
   ShieldCheck,
   Users,
-  Webhook
+  Webhook,
+  Paperclip,
+  MapPin,
+  FileText,
+  Download
 } from "lucide-react";
 import { RetellWebClient } from "retell-client-js-sdk";
 import "./styles.css";
@@ -129,6 +133,7 @@ type WebhookEvent = {
   processed: boolean;
   idempotency_key: string;
   received_at?: string | null;
+  payload?: any;
 };
 
 type Followup = {
@@ -495,8 +500,13 @@ function App() {
   const [activeTab, setActiveTab] = React.useState<TabKey>("activity");
   const [query, setQuery] = React.useState("");
   const [callingLead, setCallingLead] = React.useState<Lead | null>(null);
-  const [whatsAppLead, setWhatsAppLead] = React.useState<Lead | null>(null);
+  const [whatsAppTargetPhone, setWhatsAppTargetPhone] = React.useState<string | null>(null);
   const data = useDashboardData();
+
+  const openWhatsAppChat = React.useCallback((lead: Lead) => {
+    setWhatsAppTargetPhone(lead.phone);
+    setActiveTab("whatsapp");
+  }, []);
 
   const filteredLeads = data.leads.filter((lead) =>
     [lead.name, lead.phone, lead.zoho_lead_id, lead.campaign, lead.city]
@@ -509,7 +519,6 @@ function App() {
   return (
     <div className="shell">
       {callingLead && <CallModal lead={callingLead} onClose={() => setCallingLead(null)} />}
-      {whatsAppLead && <WhatsAppModal lead={whatsAppLead} onClose={() => setWhatsAppLead(null)} />}
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark"><Activity size={22} /></div>
@@ -608,16 +617,16 @@ function App() {
             followups={data.followups}
             syncLogs={data.syncLogs}
             onCallLead={setCallingLead}
-            onWhatsAppLead={setWhatsAppLead}
+            onWhatsAppLead={openWhatsAppChat}
           />
         )}
-        {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={setWhatsAppLead} />}
+        {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={openWhatsAppChat} />}
         {activeTab === "jobs" && <JobsTable jobs={data.jobs} onRefresh={data.load} />}
         {activeTab === "attempts" && <AttemptsTable attempts={data.attempts} />}
         {activeTab === "webhooks" && <WebhooksTable webhooks={data.webhooks} />}
         {activeTab === "followups" && <FollowupsTable followups={data.followups} />}
         {activeTab === "sync" && <SyncLogsTable logs={data.syncLogs} />}
-        {activeTab === "whatsapp" && <WhatsAppPanel leads={data.leads} onRefresh={data.load} />}
+        {activeTab === "whatsapp" && <WhatsAppChat initialPhone={whatsAppTargetPhone} leads={data.leads} />}
       </main>
     </div>
   );
@@ -1049,6 +1058,8 @@ function AttemptsTable({ attempts }: { attempts: CallAttempt[] }) {
 }
 
 function WebhooksTable({ webhooks }: { webhooks: WebhookEvent[] }) {
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
+
   return (
     <Table title="Webhook Events" count={webhooks.length}>
       <thead>
@@ -1058,19 +1069,55 @@ function WebhooksTable({ webhooks }: { webhooks: WebhookEvent[] }) {
           <th>Processed</th>
           <th>Idempotency</th>
           <th>Received</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
-        {webhooks.length === 0 && <EmptyRow colSpan={5} />}
-        {webhooks.map((event) => (
-          <tr key={event.id}>
-            <td><Badge value={event.source} /></td>
-            <td>{event.event_type}</td>
-            <td><Badge value={event.processed ? "processed" : "pending"} /></td>
-            <td>{shortId(event.idempotency_key)}</td>
-            <td>{fmtDate(event.received_at)}</td>
-          </tr>
-        ))}
+        {webhooks.length === 0 && <EmptyRow colSpan={6} />}
+        {webhooks.map((event) => {
+          const isExpanded = expandedId === event.id;
+          return (
+            <React.Fragment key={event.id}>
+              <tr onClick={() => setExpandedId(isExpanded ? null : event.id)} style={{ cursor: "pointer" }}>
+                <td><Badge value={event.source} /></td>
+                <td>{event.event_type}</td>
+                <td><Badge value={event.processed ? "processed" : "pending"} /></td>
+                <td>{shortId(event.idempotency_key)}</td>
+                <td>{fmtDate(event.received_at)}</td>
+                <td>
+                  <button className="textButton" style={{ padding: "4px 8px", fontSize: "12px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", background: "rgba(255,255,255,0.02)" }}>
+                    {isExpanded ? "Hide Details" : "View Details"}
+                  </button>
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr>
+                  <td colSpan={6} style={{ backgroundColor: "rgba(0, 0, 0, 0.15)", padding: "12px 20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <span style={{ fontSize: "13px", fontWeight: "bold", color: "#94a3b8" }}>Event Payload:</span>
+                      <pre style={{
+                        margin: 0,
+                        padding: "12px",
+                        background: "rgba(0, 0, 0, 0.3)",
+                        border: "1px solid rgba(255, 255, 255, 0.05)",
+                        borderRadius: "6px",
+                        overflowX: "auto",
+                        fontFamily: "monospace",
+                        fontSize: "12px",
+                        color: "#e2e8f0",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                        lineHeight: "1.4"
+                      }}>
+                        {JSON.stringify(event.payload, null, 2)}
+                      </pre>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
       </tbody>
     </Table>
   );
@@ -1144,8 +1191,9 @@ function Table({ title, count, children }: { title: string; count: number; child
   );
 }
 
-// ─── WhatsApp Modal ────────────────────────────────────────────────────────
-function WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
+// ─── WhatsApp Modal (legacy template-sender, kept for reference) ───────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
   const [loading, setLoading] = React.useState(false);
   const [successMsg, setSuccessMsg] = React.useState<string | null>(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
@@ -1288,8 +1336,9 @@ function WhatsAppModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
   );
 }
 
-// ─── WhatsApp Panel ────────────────────────────────────────────────────────
-function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => void }) {
+// ─── WhatsApp Panel (legacy template-sender, kept for reference) ──────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => void }) {
   const [phone, setPhone] = React.useState("");
   const [name, setName] = React.useState("");
   const [template, setTemplate] = React.useState<"completed" | "missed">("completed");
@@ -1466,6 +1515,385 @@ function WhatsAppPanel({ leads, onRefresh }: { leads: Lead[]; onRefresh: () => v
         </div>
       </div>
     </section>
+  );
+}
+
+// ─── WhatsApp Chat (two-pane two-way conversation UI) ─────────────────────
+
+type ChatMessage = {
+  id: string;
+  phone: string;
+  direction: "inbound" | "outbound";
+  type: "text" | "image" | "document" | "video" | "audio" | "location" | "template" | "other";
+  body: string | null;
+  media_url: string | null;
+  media_filename: string | null;
+  caption: string | null;
+  latitude: string | null;
+  longitude: string | null;
+  location_name: string | null;
+  created_at: string | null;
+};
+
+type ChatConversation = {
+  phone: string;
+  lead_name: string | null;
+  last_message: ChatMessage;
+  last_at: string | null;
+};
+
+type ChatThread = {
+  phone: string;
+  lead_name: string | null;
+  lead_id: string | null;
+  messages: ChatMessage[];
+};
+
+function shortPreview(m: ChatMessage): string {
+  if (m.type === "text") return m.body || "";
+  if (m.type === "location") return "📍 Location";
+  if (m.type === "image") return "📷 Image" + (m.caption ? `: ${m.caption}` : "");
+  if (m.type === "video") return "🎬 Video" + (m.caption ? `: ${m.caption}` : "");
+  if (m.type === "document") return "📄 " + (m.media_filename || "Document");
+  if (m.type === "audio") return "🎵 Audio";
+  return m.body || `[${m.type}]`;
+}
+
+function WhatsAppChat({ initialPhone, leads }: { initialPhone: string | null; leads: Lead[] }) {
+  const [conversations, setConversations] = React.useState<ChatConversation[]>([]);
+  const [selectedPhone, setSelectedPhone] = React.useState<string | null>(initialPhone);
+  const [thread, setThread] = React.useState<ChatThread | null>(null);
+  const [composeText, setComposeText] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [uploading, setUploading] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Build a merged list: backend conversations + leads with no conversation yet
+  const mergedList = React.useMemo<ChatConversation[]>(() => {
+    const byPhone = new Map<string, ChatConversation>();
+    for (const c of conversations) byPhone.set(c.phone, c);
+    for (const lead of leads) {
+      if (!byPhone.has(lead.phone)) {
+        byPhone.set(lead.phone, {
+          phone: lead.phone,
+          lead_name: lead.name,
+          last_message: {
+            id: `placeholder-${lead.id}`,
+            phone: lead.phone,
+            direction: "outbound",
+            type: "text",
+            body: "(no messages yet)",
+            media_url: null,
+            media_filename: null,
+            caption: null,
+            latitude: null,
+            longitude: null,
+            location_name: null,
+            created_at: null,
+          },
+          last_at: null,
+        });
+      } else if (!byPhone.get(lead.phone)!.lead_name) {
+        byPhone.get(lead.phone)!.lead_name = lead.name;
+      }
+    }
+    return Array.from(byPhone.values()).sort((a, b) => {
+      const ta = a.last_at ? new Date(a.last_at).getTime() : 0;
+      const tb = b.last_at ? new Date(b.last_at).getTime() : 0;
+      return tb - ta;
+    });
+  }, [conversations, leads]);
+
+  React.useEffect(() => {
+    if (initialPhone) setSelectedPhone(initialPhone);
+  }, [initialPhone]);
+
+  const loadConversations = React.useCallback(async () => {
+    try {
+      const r = await fetch("/whatsapp/conversations");
+      if (!r.ok) throw new Error(`/whatsapp/conversations -> ${r.status}`);
+      const data: ChatConversation[] = await r.json();
+      setConversations(data);
+    } catch (e) {
+      console.warn("loadConversations failed:", e);
+    }
+  }, []);
+
+  const loadThread = React.useCallback(async (phone: string) => {
+    try {
+      const r = await fetch(`/whatsapp/conversations/${encodeURIComponent(phone)}`);
+      if (!r.ok) throw new Error(`/whatsapp/conversations/${phone} -> ${r.status}`);
+      const data: ChatThread = await r.json();
+      setThread(data);
+    } catch (e) {
+      console.warn("loadThread failed:", e);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadConversations();
+    const id = window.setInterval(() => {
+      void loadConversations();
+      if (selectedPhone) void loadThread(selectedPhone);
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [loadConversations, loadThread, selectedPhone]);
+
+  React.useEffect(() => {
+    if (selectedPhone) void loadThread(selectedPhone);
+    else setThread(null);
+  }, [selectedPhone, loadThread]);
+
+  React.useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [thread?.messages.length]);
+
+  const sendMessage = async (payload: Record<string, unknown>) => {
+    if (!selectedPhone) return;
+    setSending(true);
+    setError(null);
+    try {
+      const r = await fetch(`/whatsapp/conversations/${encodeURIComponent(selectedPhone)}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data));
+      await loadThread(selectedPhone);
+      await loadConversations();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "send failed");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const sendText = async () => {
+    if (!composeText.trim() || !selectedPhone) return;
+    const body = composeText;
+    setComposeText("");
+    await sendMessage({ type: "text", body });
+  };
+
+  const handleFile = async (file: File) => {
+    if (!selectedPhone) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const upRes = await fetch("/whatsapp/upload", { method: "POST", body: fd });
+      const upJson = await upRes.json();
+      if (!upRes.ok) throw new Error(upJson.detail || "upload failed");
+      const url: string = upJson.url;
+      const mime = (file.type || "").toLowerCase();
+      let type: "image" | "video" | "audio" | "document" = "document";
+      if (mime.startsWith("image/")) type = "image";
+      else if (mime.startsWith("video/")) type = "video";
+      else if (mime.startsWith("audio/")) type = "audio";
+      const payload: Record<string, unknown> = { type, media_url: url };
+      if (type === "document") payload.media_filename = file.name;
+      await sendMessage(payload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const sendLocation = () => {
+    if (!selectedPhone) return;
+    if (!navigator.geolocation) {
+      setError("geolocation not supported by this browser");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        await sendMessage({
+          type: "location",
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          location_name: "Current location",
+        });
+      },
+      (err) => setError(`location error: ${err.message}`),
+    );
+  };
+
+  return (
+    <section className="content" style={{ height: "calc(100vh - 180px)", display: "flex" }}>
+      <div className="waChatWrap">
+        <aside className="waConvList">
+          <div className="waConvHeader">
+            <strong>Conversations</strong>
+            <span>{mergedList.length}</span>
+          </div>
+          {mergedList.map((c) => (
+            <button
+              key={c.phone}
+              className={"waConvRow" + (c.phone === selectedPhone ? " active" : "")}
+              onClick={() => setSelectedPhone(c.phone)}
+            >
+              <div className="waConvAvatar">{(c.lead_name || c.phone).slice(0, 1).toUpperCase()}</div>
+              <div className="waConvBody">
+                <div className="waConvTopLine">
+                  <strong>{c.lead_name || c.phone}</strong>
+                  <span>{c.last_at ? fmtDate(c.last_at) : ""}</span>
+                </div>
+                <span className="waConvPreview">{shortPreview(c.last_message)}</span>
+              </div>
+            </button>
+          ))}
+          {mergedList.length === 0 && <div className="emptyCard">No conversations yet</div>}
+        </aside>
+
+        <main className="waThread">
+          {!selectedPhone && <div className="waEmpty">Select a conversation to start chatting</div>}
+          {selectedPhone && (
+            <>
+              <header className="waThreadHeader">
+                <div className="waConvAvatar">{(thread?.lead_name || selectedPhone).slice(0, 1).toUpperCase()}</div>
+                <div>
+                  <strong>{thread?.lead_name || selectedPhone}</strong>
+                  <span>{selectedPhone}</span>
+                </div>
+              </header>
+
+              <div className="waMessages">
+                {thread?.messages.map((m) => (
+                  <MessageBubble key={m.id} m={m} />
+                ))}
+                <div ref={messagesEndRef} />
+                {(!thread || thread.messages.length === 0) && (
+                  <div className="emptyCard">No messages yet — say hello!</div>
+                )}
+              </div>
+
+              {error && (
+                <div className="notice badNotice" style={{ margin: "0 14px 8px" }}>
+                  <AlertCircle size={14} />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="waCompose">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt"
+                  style={{
+                    position: "absolute",
+                    width: 1,
+                    height: 1,
+                    padding: 0,
+                    margin: -1,
+                    overflow: "hidden",
+                    clip: "rect(0,0,0,0)",
+                    border: 0,
+                    opacity: 0,
+                  }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) {
+                      console.log("[chat] file selected", f.name, f.size, f.type);
+                      void handleFile(f);
+                    }
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  className="waComposeBtn"
+                  disabled={uploading || sending}
+                  onClick={(ev) => {
+                    ev.preventDefault();
+                    fileInputRef.current?.click();
+                  }}
+                  type="button"
+                  title="Attach file (image, video, audio, document)"
+                >
+                  <Paperclip size={18} />
+                </button>
+                <button
+                  className="waComposeBtn"
+                  disabled={sending}
+                  onClick={sendLocation}
+                  title="Send location"
+                >
+                  <MapPin size={18} />
+                </button>
+                <input
+                  className="waComposeInput"
+                  placeholder={uploading ? "Uploading..." : "Type a message"}
+                  value={composeText}
+                  onChange={(e) => setComposeText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendText();
+                    }
+                  }}
+                  disabled={sending || uploading}
+                />
+                <button
+                  className="waSendBtn"
+                  disabled={!composeText.trim() || sending || uploading}
+                  onClick={() => void sendText()}
+                  title="Send"
+                >
+                  <Send size={18} />
+                </button>
+              </div>
+            </>
+          )}
+        </main>
+      </div>
+    </section>
+  );
+}
+
+function MessageBubble({ m }: { m: ChatMessage }) {
+  const cls = "waBubble " + (m.direction === "outbound" ? "out" : "in");
+  return (
+    <div className={cls}>
+      {m.type === "text" && <span>{m.body}</span>}
+      {m.type === "image" && m.media_url && (
+        <>
+          <a href={m.media_url} target="_blank" rel="noreferrer">
+            <img src={m.media_url} alt="" style={{ maxWidth: 240, borderRadius: 8 }} />
+          </a>
+          {m.caption && <span style={{ marginTop: 6 }}>{m.caption}</span>}
+        </>
+      )}
+      {m.type === "video" && m.media_url && (
+        <>
+          <video src={m.media_url} controls style={{ maxWidth: 240, borderRadius: 8 }} />
+          {m.caption && <span style={{ marginTop: 6 }}>{m.caption}</span>}
+        </>
+      )}
+      {m.type === "audio" && m.media_url && <audio src={m.media_url} controls />}
+      {m.type === "document" && m.media_url && (
+        <a className="waDocLink" href={m.media_url} target="_blank" rel="noreferrer">
+          <FileText size={16} />
+          <span>{m.media_filename || "Document"}</span>
+          <Download size={14} />
+        </a>
+      )}
+      {m.type === "location" && m.latitude && m.longitude && (
+        <a
+          className="waDocLink"
+          href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <MapPin size={16} />
+          <span>{m.location_name || `${m.latitude},${m.longitude}`}</span>
+        </a>
+      )}
+      <span className="waBubbleTime">{m.created_at ? fmtDate(m.created_at) : ""}</span>
+    </div>
   );
 }
 

@@ -1099,3 +1099,229 @@ td small {
   border-radius: 8px;
   font-size: 13px;
 }
+
+/* ── WhatsApp Chat ───────────────────────────────────────────── */
+.waChatWrap {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 0;
+  width: 100%;
+  height: 100%;
+  background: #0e1725;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.waConvList {
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-y: auto;
+  background: #111a2c;
+  color: #dbe5f5;
+}
+
+.waConvHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  position: sticky;
+  top: 0;
+  background: #111a2c;
+  z-index: 1;
+}
+.waConvHeader span {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.waConvRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.waConvRow:hover { background: rgba(255, 255, 255, 0.03); }
+.waConvRow.active { background: rgba(37, 211, 102, 0.08); }
+
+.waConvAvatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #25d366, #1da851);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.waConvBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.waConvTopLine {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.waConvTopLine strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.waConvTopLine span {
+  font-size: 10.5px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.waConvPreview {
+  display: block;
+  font-size: 12px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waThread {
+  display: flex;
+  flex-direction: column;
+  background: #0b1322;
+  color: #e8edf6;
+  min-height: 0;
+}
+
+.waThreadHeader {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: #111a2c;
+}
+.waThreadHeader strong {
+  display: block;
+  font-size: 14px;
+}
+.waThreadHeader span {
+  display: block;
+  font-size: 11.5px;
+  opacity: 0.6;
+}
+
+.waMessages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background-image: linear-gradient(rgba(0,0,0,0.18), rgba(0,0,0,0.18)),
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.01) 0 8px, transparent 8px 16px);
+}
+
+.waBubble {
+  max-width: 60%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  display: flex;
+  flex-direction: column;
+  word-wrap: break-word;
+  line-height: 1.35;
+}
+.waBubble.in {
+  align-self: flex-start;
+  background: #1d2940;
+  border-bottom-left-radius: 2px;
+}
+.waBubble.out {
+  align-self: flex-end;
+  background: #134e3a;
+  border-bottom-right-radius: 2px;
+}
+
+.waBubbleTime {
+  font-size: 10px;
+  opacity: 0.55;
+  margin-top: 4px;
+  align-self: flex-end;
+}
+
+.waDocLink {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  background: rgba(255,255,255,0.04);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.waCompose {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: #111a2c;
+  align-items: center;
+}
+
+.waComposeBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: transparent;
+  color: #dbe5f5;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.waComposeBtn:hover { background: rgba(255,255,255,0.05); }
+.waComposeBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.waComposeInput {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.25);
+  color: #fff;
+  outline: none;
+  font-size: 14px;
+}
+
+.waSendBtn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: #25d366;
+  color: #0e1725;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.waSendBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.waEmpty {
+  margin: auto;
+  opacity: 0.55;
+  font-size: 14px;
+}

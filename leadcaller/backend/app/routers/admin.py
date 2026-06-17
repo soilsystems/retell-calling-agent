@@ -265,6 +265,7 @@ async def webhook_events(limit: int = 100, db: AsyncSession = Depends(get_db)) -
             "processed": event.processed,
             "idempotency_key": event.idempotency_key,
             "received_at": _iso(event.received_at),
+            "payload": event.payload,
         }
         for event in result.scalars()
     ]

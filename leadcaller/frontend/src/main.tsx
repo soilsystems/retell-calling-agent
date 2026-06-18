@@ -1556,6 +1556,7 @@ function shortPreview(m: ChatMessage): string {
   if (m.type === "video") return "🎬 Video" + (m.caption ? `: ${m.caption}` : "");
   if (m.type === "document") return "📄 " + (m.media_filename || "Document");
   if (m.type === "audio") return "🎵 Audio";
+  if (m.type === "template") return m.body || "📋 Template";
   return m.body || `[${m.type}]`;
 }
 
@@ -1855,9 +1856,15 @@ function WhatsAppChat({ initialPhone, leads }: { initialPhone: string | null; le
 }
 
 function MessageBubble({ m }: { m: ChatMessage }) {
-  const cls = "waBubble " + (m.direction === "outbound" ? "out" : "in");
+  const cls = "waBubble " + (m.direction === "outbound" ? "out" : "in") + (m.type === "template" ? " template" : "");
   return (
     <div className={cls}>
+      {m.type === "template" && (
+        <>
+          <span className="waTemplateBadge">TEMPLATE</span>
+          <span style={{ marginTop: 4 }}>{m.body || "(template)"}</span>
+        </>
+      )}
       {m.type === "text" && <span>{m.body}</span>}
       {m.type === "image" && m.media_url && (
         <>

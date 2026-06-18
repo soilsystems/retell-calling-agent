@@ -45,6 +45,7 @@ from app.services.retell_service import (
     trigger_retell_call,
 )
 from app.services.exotel_service import pop_pending_outbound_bridge
+from app.services.exotel_whatsapp_service import send_post_call_template
 from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
@@ -149,7 +150,11 @@ async def retell_call_completed(
     attempt = await process_retell_completion(payload, webhook_event, db)
     if attempt and call_over:
         background_tasks.add_task(sync_to_zoho, attempt.id)
-        background_tasks.add_task(send_whatsapp_for_call, attempt.id)
+        # Send the post-call WhatsApp template (woods_and_spices) via Exotel.
+        # Templates bypass the 24h conversation window, so this works for cold leads too.
+        # This replaces the legacy send_whatsapp_for_call (Meta path → soil_systems
+        # template) which was duplicating effort and sending the wrong template.
+        background_tasks.add_task(send_post_call_template, attempt.id)
         structured = attempt.structured_data or {}
         if structured.get("follow_up_required"):
             background_tasks.add_task(create_followup_task, attempt.id)

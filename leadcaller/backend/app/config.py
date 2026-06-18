@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     EXOTEL_WA_TEMPLATE_SOIL_SYSTEMS: str = "soil_systems"
     EXOTEL_WA_TEMPLATE_COMPLETED: str = "call_followup"
     EXOTEL_WA_TEMPLATE_MISSED: str = "call_missed"
+    # Template sent automatically to every lead after a call ends.
+    EXOTEL_WA_TEMPLATE_POST_CALL: str = "woods_and_spices"
+    EXOTEL_WA_TEMPLATE_POST_CALL_LANG: str = "en"
     BOOKING_LINK: str = "https://soilsystems.in/book"
 
     BASE_URL: str

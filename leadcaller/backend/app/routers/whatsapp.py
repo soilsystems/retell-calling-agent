@@ -452,15 +452,15 @@ async def list_conversations(
         msg = latest.scalar_one_or_none()
         if not msg:
             continue
-        # Try to attach a lead name if we have one
-        lead_result = await db.execute(
-            select(Lead).where(Lead.phone.like(f"%{phone[-10:]}")).limit(1)
-        )
-        lead = lead_result.scalar_one_or_none()
+        # NOTE: lead-name lookup is intentionally NOT done here. A LIKE '%suffix'
+        # query on leads.phone forces a full table scan and exceeds the prod DB
+        # statement_timeout when there are many conversations. The frontend
+        # already merges names from its /admin/leads payload, so leaving
+        # lead_name=null here is fine for UX.
         out.append(
             {
                 "phone": phone,
-                "lead_name": lead.name if lead else None,
+                "lead_name": None,
                 "last_message": _message_to_dict(msg),
                 "last_at": last_at.isoformat() if last_at else None,
             }

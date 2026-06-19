@@ -21,11 +21,16 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_leads_phone_trgm "
-        "ON leads USING gin (phone gin_trgm_ops)"
-    )
+    # Run outside the migration's wrapping transaction so we can:
+    #   1. SET statement_timeout = 0     (Supabase's default kills slow DDL)
+    #   2. CREATE INDEX CONCURRENTLY     (forbidden inside a transaction)
+    with op.get_context().autocommit_block():
+        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        op.execute("SET statement_timeout = 0")
+        op.execute(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_leads_phone_trgm "
+            "ON leads USING gin (phone gin_trgm_ops)"
+        )
 
 
 def downgrade() -> None:

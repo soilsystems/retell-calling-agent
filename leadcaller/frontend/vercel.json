@@ -5,11 +5,11 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "rewrites": [
-    { "source": "/admin/:path*",    "destination": "https://dweller-tinkling-mutiny.ngrok-free.dev/admin/:path*" },
-    { "source": "/whatsapp/:path*", "destination": "https://dweller-tinkling-mutiny.ngrok-free.dev/whatsapp/:path*" },
-    { "source": "/webhooks/:path*", "destination": "https://dweller-tinkling-mutiny.ngrok-free.dev/webhooks/:path*" },
-    { "source": "/uploads/:path*",  "destination": "https://dweller-tinkling-mutiny.ngrok-free.dev/uploads/:path*" },
-    { "source": "/health",          "destination": "https://dweller-tinkling-mutiny.ngrok-free.dev/health" },
+    { "source": "/admin/:path*",    "destination": "https://leadcaller-backend-production.up.railway.app/admin/:path*" },
+    { "source": "/whatsapp/:path*", "destination": "https://leadcaller-backend-production.up.railway.app/whatsapp/:path*" },
+    { "source": "/webhooks/:path*", "destination": "https://leadcaller-backend-production.up.railway.app/webhooks/:path*" },
+    { "source": "/uploads/:path*",  "destination": "https://leadcaller-backend-production.up.railway.app/uploads/:path*" },
+    { "source": "/health",          "destination": "https://leadcaller-backend-production.up.railway.app/health" },
     { "source": "/(.*)",            "destination": "/index.html" }
   ]
 }

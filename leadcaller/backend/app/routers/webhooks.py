@@ -269,21 +269,23 @@ async def exotel_status(
             content={"status": "accepted", "whatsapp": "queued", "call_attempt_id": str(attempt.id)},
         )
 
-    # Not answered → record a no_answer attempt and schedule the twice-daily retry.
-    failure_reason = "busy" if status == "busy" else "no_answer"
+    # Not answered → record the attempt and schedule the twice-daily retry.
+    # From the business' view ANY un-connected outbound call (busy, no-answer,
+    # failed, cancelled, missed) means "the lead didn't pick up", so they all
+    # follow the same 10am/2pm-for-5-days cadence (failure_reason="no_answer").
     attempt = await _ensure_exotel_call_attempt(
         lead, payload, db,
-        attempt_status=CallAttemptStatus.busy if failure_reason == "busy" else CallAttemptStatus.no_answer,
+        attempt_status=CallAttemptStatus.busy if status == "busy" else CallAttemptStatus.no_answer,
         mark_job_completed=False,
     )
     logger.info(
-        "Exotel status=%s for lead=%s — scheduling %s retry on call_job=%s",
-        status, lead.id, failure_reason, attempt.call_job_id,
+        "Exotel status=%s for lead=%s — scheduling twice-daily no_answer retry on call_job=%s",
+        status, lead.id, attempt.call_job_id,
     )
-    background_tasks.add_task(schedule_retry, attempt.call_job_id, failure_reason)
+    background_tasks.add_task(schedule_retry, attempt.call_job_id, "no_answer")
     return JSONResponse(
         status_code=200,
-        content={"status": "accepted", "retry": failure_reason, "call_attempt_id": str(attempt.id)},
+        content={"status": "accepted", "retry": "no_answer", "exotel_status": status, "call_attempt_id": str(attempt.id)},
     )
 
 

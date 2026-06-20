@@ -175,10 +175,36 @@ async def fetch_real_inbound_caller_phone(
 # Dict of {lead_phone_suffix: {lead_name, lead_phone, lead_id, city, campaign, ...}}
 _pending_outbound_bridges: dict[str, dict] = {}
 
+# Longer-lived CallSid -> lead_id map used by the Exotel status callback to
+# correlate a no-answer/busy/failed result back to the lead we dialled. Kept
+# separate from _pending_outbound_bridges (90s LIFO cache) so it doesn't
+# pollute inbound-call detection, and given a generous TTL because a no-answer
+# status can arrive a minute or two after dialling (long ring).
+_outbound_call_leads: dict[str, dict] = {}
+_OUTBOUND_CALL_TTL = 1800  # 30 min
+
+
+def record_outbound_call(call_sid: str | None, lead_id: str) -> None:
+    if not call_sid:
+        return
+    now = datetime.now(timezone.utc).timestamp()
+    _outbound_call_leads[call_sid] = {"lead_id": lead_id, "at": now}
+    stale = [k for k, v in _outbound_call_leads.items() if v["at"] < now - _OUTBOUND_CALL_TTL]
+    for k in stale:
+        _outbound_call_leads.pop(k, None)
+
+
+def lookup_outbound_call_lead(call_sid: str | None) -> str | None:
+    if not call_sid:
+        return None
+    entry = _outbound_call_leads.get(call_sid)
+    return entry["lead_id"] if entry else None
+
 
 def cache_outbound_bridge(lead: "Lead", call_sid: str | None = None) -> None:
     """Cache lead info for fast lookup in the Retell inbound webhook."""
     from datetime import datetime, timezone
+    record_outbound_call(call_sid, str(lead.id))
     suffix = "".join(c for c in (lead.phone or "") if c.isdigit())[-10:]
     if not suffix:
         return

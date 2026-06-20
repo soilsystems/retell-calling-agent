@@ -239,3 +239,23 @@ async def test_resolver_retries_until_record_appears(monkeypatch, _no_sleep):
         )
 
     assert result == "+916361232277"
+
+
+def test_outbound_call_lead_record_and_lookup():
+    from app.services import exotel_service as es
+    es._outbound_call_leads.clear()
+    es.record_outbound_call("sid-abc", "lead-123")
+    assert es.lookup_outbound_call_lead("sid-abc") == "lead-123"
+    assert es.lookup_outbound_call_lead("missing") is None
+    assert es.lookup_outbound_call_lead(None) is None
+
+
+def test_outbound_call_lead_evicts_stale(monkeypatch):
+    from app.services import exotel_service as es
+    es._outbound_call_leads.clear()
+    es.record_outbound_call("old", "lead-old")
+    # Make the entry look ancient, then record a new one (triggers eviction).
+    es._outbound_call_leads["old"]["at"] -= es._OUTBOUND_CALL_TTL + 60
+    es.record_outbound_call("new", "lead-new")
+    assert es.lookup_outbound_call_lead("old") is None
+    assert es.lookup_outbound_call_lead("new") == "lead-new"

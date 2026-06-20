@@ -44,7 +44,7 @@ from app.services.retell_service import (
     schedule_retry,
     trigger_retell_call,
 )
-from app.services.exotel_service import pop_pending_outbound_bridge
+from app.services.exotel_service import lookup_outbound_call_lead, pop_pending_outbound_bridge
 from app.services.exotel_whatsapp_service import send_post_call_template
 from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
@@ -237,19 +237,53 @@ async def exotel_status(
 
     logger.info("Exotel status callback received: %s", payload)
     status = _exotel_status(payload)
-    if status not in {"completed", "answered"}:
+
+    answered = status in {"completed", "answered"}
+    # Outbound bridge calls that the lead never picks up are reported ONLY by
+    # Exotel (Retell is never bridged), so this is the only place a no-answer
+    # retry can be scheduled.
+    not_answered = status in {"busy", "no_answer", "failed", "canceled", "cancelled", "missed", "no_connect", "not_connected"}
+    if not answered and not not_answered:
+        # in-progress / ringing / unknown — nothing to do yet.
         return JSONResponse(status_code=200, content={"status": "accepted", "call_status": status})
 
     lead = await _find_lead_for_exotel_status(payload, db)
     if not lead:
+        # Fall back to the CallSid -> lead map recorded when we placed the call.
+        call_sid = _payload_value(payload, "CallSid", "Sid", "CallUUID", "CallUuid", "call_sid")
+        lead_id = lookup_outbound_call_lead(str(call_sid) if call_sid else None)
+        if lead_id:
+            try:
+                lead = await db.get(Lead, uuid.UUID(lead_id))
+            except (ValueError, TypeError):
+                lead = None
+    if not lead:
         logger.warning("Exotel status callback could not resolve lead: %s", payload)
-        return JSONResponse(status_code=200, content={"status": "accepted", "whatsapp": "lead_not_found"})
+        return JSONResponse(status_code=200, content={"status": "accepted", "resolve": "lead_not_found"})
 
-    attempt = await _ensure_exotel_call_attempt(lead, payload, db)
-    background_tasks.add_task(send_whatsapp_for_call, attempt.id)
+    if answered:
+        attempt = await _ensure_exotel_call_attempt(lead, payload, db)
+        background_tasks.add_task(send_whatsapp_for_call, attempt.id)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "accepted", "whatsapp": "queued", "call_attempt_id": str(attempt.id)},
+        )
+
+    # Not answered → record a no_answer attempt and schedule the twice-daily retry.
+    failure_reason = "busy" if status == "busy" else "no_answer"
+    attempt = await _ensure_exotel_call_attempt(
+        lead, payload, db,
+        attempt_status=CallAttemptStatus.busy if failure_reason == "busy" else CallAttemptStatus.no_answer,
+        mark_job_completed=False,
+    )
+    logger.info(
+        "Exotel status=%s for lead=%s — scheduling %s retry on call_job=%s",
+        status, lead.id, failure_reason, attempt.call_job_id,
+    )
+    background_tasks.add_task(schedule_retry, attempt.call_job_id, failure_reason)
     return JSONResponse(
         status_code=200,
-        content={"status": "accepted", "whatsapp": "queued", "call_attempt_id": str(attempt.id)},
+        content={"status": "accepted", "retry": failure_reason, "call_attempt_id": str(attempt.id)},
     )
 
 
@@ -319,6 +353,9 @@ async def _ensure_exotel_call_attempt(
     lead: Lead,
     payload: dict[str, Any],
     db: AsyncSession,
+    *,
+    attempt_status: CallAttemptStatus = CallAttemptStatus.completed,
+    mark_job_completed: bool = True,
 ) -> CallAttempt:
     call_sid = _payload_value(payload, "CallSid", "Sid", "CallUUID", "CallUuid", "call_sid") or str(uuid.uuid4())
     retell_call_id = f"exotel:{call_sid}"
@@ -339,14 +376,15 @@ async def _ensure_exotel_call_attempt(
     if not call_job:
         call_job = CallJob(
             lead_id=lead.id,
-            status=CallJobStatus.completed,
+            status=CallJobStatus.completed if mark_job_completed else CallJobStatus.in_progress,
             scheduled_at=now,
             started_at=now,
-            completed_at=now,
+            completed_at=now if mark_job_completed else None,
+            trigger_reason="manual_call",
         )
         db.add(call_job)
         await db.flush()
-    else:
+    elif mark_job_completed:
         call_job.status = CallJobStatus.completed
         call_job.completed_at = call_job.completed_at or now
 
@@ -355,7 +393,7 @@ async def _ensure_exotel_call_attempt(
         call_job_id=call_job.id,
         retell_call_id=retell_call_id,
         attempt_number=int(attempt_count or 0) + 1,
-        status=CallAttemptStatus.completed,
+        status=attempt_status,
         structured_data={"source": "exotel", "status_callback": payload},
         started_at=now,
         ended_at=now,

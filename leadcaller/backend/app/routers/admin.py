@@ -17,6 +17,7 @@ from app.models import (
     CallJobStatus,
     CrmSyncLog,
     Followup,
+    LanguagePreference,
     Lead,
     WebhookEvent,
 )
@@ -30,6 +31,16 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 class CallLeadRequest(BaseModel):
     mode: Literal["ai", "human", "exotel", "exotel_human", "exotel_app"]
     agent_phone: str | None = None
+
+
+class VisitUpdateRequest(BaseModel):
+    visited: bool
+
+
+class CallNumberRequest(BaseModel):
+    phone: str
+    name: str | None = None
+    language: str | None = None
 
 
 class ZohoSyncResponse(BaseModel):
@@ -146,6 +157,14 @@ async def leads(limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[di
         latest_attempt = None
         if latest_job:
             latest_attempt = max(latest_job.attempts, key=lambda attempt: attempt.attempt_number, default=None)
+
+        # Did the lead ever pick up? (any attempt answered/completed)
+        all_attempts = [a for job in lead.call_jobs for a in job.attempts]
+        picked_up = any(_status_value(a.status) in {"answered", "completed"} for a in all_attempts)
+        # Next upcoming call (pending job with the soonest scheduled_at).
+        pending_jobs = [j for j in lead.call_jobs if _status_value(j.status) == "pending"]
+        next_job = min(pending_jobs, key=lambda j: j.scheduled_at, default=None) if pending_jobs else None
+
         rows.append(
             {
                 "id": str(lead.id),
@@ -177,6 +196,16 @@ async def leads(limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[di
                 "latest_follow_up_time": (latest_attempt.structured_data or {}).get("follow_up_time")
                 if latest_attempt
                 else None,
+                # Pickup + next scheduled call (for the "who picked / who didn't" view)
+                "picked_up": picked_up,
+                "next_scheduled_call_at": _iso(next_job.scheduled_at) if next_job else None,
+                "next_scheduled_call_reason": next_job.trigger_reason if next_job else None,
+                # Site-visit tracking
+                "site_visit_fixed": bool(lead.site_visit_fixed),
+                "site_visit_date": lead.site_visit_date,
+                "visited": bool(lead.visited),
+                "visited_at": _iso(lead.visited_at),
+                "feedback_sent": bool(lead.feedback_sent),
             }
         )
     return rows
@@ -357,3 +386,75 @@ async def call_lead(
 
     from app.services.exotel_service import connect_exotel_human_call
     return await connect_exotel_human_call(lead, body.agent_phone.strip(), db)
+
+
+@router.patch("/leads/{lead_id}/visit")
+async def set_lead_visited(
+    lead_id: uuid.UUID,
+    body: VisitUpdateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually mark a lead as visited / not visited.
+
+    When toggled to visited=True for the first time, queue a one-time feedback
+    WhatsApp template to the lead.
+    """
+    lead = await db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="lead not found")
+
+    was_visited = bool(lead.visited)
+    lead.visited = body.visited
+    lead.visited_at = datetime.now(timezone.utc) if body.visited else None
+    await db.commit()
+
+    send_feedback = body.visited and not was_visited and not lead.feedback_sent
+    if send_feedback:
+        from app.services.exotel_whatsapp_service import send_feedback_template
+        background_tasks.add_task(send_feedback_template, lead.id)
+
+    return {
+        "id": str(lead.id),
+        "visited": lead.visited,
+        "visited_at": _iso(lead.visited_at),
+        "feedback_queued": send_feedback,
+    }
+
+
+@router.post("/call-number")
+async def call_number(
+    body: CallNumberRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Place an AI outbound call to an arbitrary phone number typed in the
+    dashboard. If a lead with that number already exists it's reused; otherwise
+    a lightweight lead is created (synthetic Zoho id → skipped by Zoho sync)."""
+    from app.services.exotel_service import format_phone_number
+    from app.services.retell_service import _find_lead_by_phone
+
+    phone = format_phone_number(body.phone.strip())
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) < 10:
+        raise HTTPException(status_code=400, detail="invalid phone number")
+
+    lead = await _find_lead_by_phone(phone, db)
+    if lead is None:
+        try:
+            language = LanguagePreference(body.language) if body.language else LanguagePreference.english
+        except ValueError:
+            language = LanguagePreference.english
+        lead = Lead(
+            zoho_lead_id=f"manual-{digits[-10:]}-{int(datetime.now(timezone.utc).timestamp())}",
+            name=(body.name or "Manual Test").strip() or "Manual Test",
+            phone=phone,
+            language_preference=language,
+            source="Manual Dashboard",
+        )
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+
+    result = await connect_exotel_call_with_retell_ai(lead, db)
+    return {**result, "lead_id": str(lead.id), "phone": phone, "name": lead.name}

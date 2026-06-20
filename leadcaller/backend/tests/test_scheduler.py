@@ -72,9 +72,12 @@ async def test_pending_job_not_triggered_when_scheduled_at_future(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_answer_schedules_next_business_day(monkeypatch):
-    job = CallJob(id=uuid4(), lead_id=uuid4(), status=CallJobStatus.failed, scheduled_at=datetime.now(timezone.utc))
-    next_retry = datetime(2026, 6, 8, 4, 30)
+async def test_no_answer_schedules_twice_daily_slot(monkeypatch):
+    job = CallJob(
+        id=uuid4(), lead_id=uuid4(), status=CallJobStatus.failed,
+        scheduled_at=datetime.now(timezone.utc), retry_count=0, max_retries=3,
+    )
+    next_retry = datetime(2026, 6, 8, 8, 30, tzinfo=timezone.utc)  # a 2pm IST slot
 
     class Db:
         async def get(self, model, id_):
@@ -83,13 +86,45 @@ async def test_no_answer_schedules_next_business_day(monkeypatch):
         async def commit(self):
             return None
 
-    monkeypatch.setattr(retell_service, "get_next_business_day_at_10am", lambda: next_retry)
+    monkeypatch.setattr(retell_service, "next_twice_daily_slot", lambda _now: next_retry)
 
     await retell_service.schedule_retry(job.id, "no_answer", Db())
 
     assert job.status == CallJobStatus.pending
-    assert job.scheduled_at == next_retry.replace(tzinfo=timezone.utc)
+    assert job.scheduled_at == next_retry
     assert job.trigger_reason == "no_answer_retry"
+    assert job.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_answer_retries_up_to_ten_then_cancels(monkeypatch):
+    # A job that already has max_retries=3 should still get up to 10 no_answer
+    # retries (twice daily for 5 days) before being cancelled.
+    job = CallJob(
+        id=uuid4(), lead_id=uuid4(), status=CallJobStatus.failed,
+        scheduled_at=datetime.now(timezone.utc), retry_count=9, max_retries=3,
+    )
+
+    class Db:
+        async def get(self, model, id_):
+            return job
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(
+        retell_service, "next_twice_daily_slot",
+        lambda _now: datetime(2026, 6, 8, 8, 30, tzinfo=timezone.utc),
+    )
+
+    # retry_count=9 < 10 → still schedules (the 10th retry)
+    await retell_service.schedule_retry(job.id, "no_answer", Db())
+    assert job.status == CallJobStatus.pending
+    assert job.retry_count == 10
+
+    # retry_count=10 → cancelled
+    await retell_service.schedule_retry(job.id, "no_answer", Db())
+    assert job.status == CallJobStatus.cancelled
 
 
 @pytest.mark.asyncio

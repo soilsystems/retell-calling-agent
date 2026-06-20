@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # Template sent automatically to every lead after a call ends.
     EXOTEL_WA_TEMPLATE_POST_CALL: str = "woods_and_spices"
     EXOTEL_WA_TEMPLATE_POST_CALL_LANG: str = "en"
+    # Template sent when a lead is manually marked as "visited" on the dashboard.
+    EXOTEL_WA_TEMPLATE_FEEDBACK: str = "visit_feedback"
+    EXOTEL_WA_TEMPLATE_FEEDBACK_LANG: str = "en"
     BOOKING_LINK: str = "https://soilsystems.in/book"
 
     BASE_URL: str

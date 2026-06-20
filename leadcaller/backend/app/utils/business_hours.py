@@ -55,3 +55,30 @@ def get_next_business_day_at_10am() -> datetime:
 
     next_call = next_day.replace(hour=10, minute=0, second=0, microsecond=0)
     return next_call.astimezone(pytz.utc).replace(tzinfo=None)
+
+
+# Twice-daily callback slots for un-answered leads (IST).
+RETRY_SLOTS = (time(10, 0), time(14, 0))
+
+
+def next_twice_daily_slot(dt: datetime) -> datetime:
+    """Return the next 10:00 or 14:00 IST slot strictly after `dt`.
+
+    Used to re-call leads who didn't pick up: morning (10am) and afternoon
+    (2pm) every business day. Sundays are skipped. Returns a timezone-aware
+    UTC datetime.
+    """
+    local_dt = _as_business_tz(dt)
+    tz = ZoneInfo(BUSINESS_TZ)
+
+    # Try remaining slots today (if today is a business day), else roll forward.
+    day = local_dt.date()
+    for _ in range(8):  # safety bound — always finds a slot within a week
+        if datetime.combine(day, time(0, 0), tz).weekday() in BUSINESS_DAYS:
+            for slot in RETRY_SLOTS:
+                candidate = datetime.combine(day, slot, tz)
+                if candidate > local_dt:
+                    return candidate.astimezone(timezone.utc)
+        day = day + timedelta(days=1)
+    # Unreachable in practice, but return a safe fallback.
+    return next_business_slot(dt)

@@ -1344,3 +1344,77 @@ td small {
   background: rgba(255,255,255,0.1);
   align-self: flex-start;
 }
+
+/* ── Call-a-number button (topbar) ── */
+.callNumberBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, #2dd4bf, #14b8a6);
+  color: #04201c;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.callNumberBtn:hover { filter: brightness(1.05); }
+
+/* ── Call-a-number modal form ── */
+.numForm { display: flex; flex-direction: column; gap: 14px; padding: 6px 2px; }
+.numField { display: flex; flex-direction: column; gap: 6px; }
+.numField > span { font-size: 0.78rem; color: #64748b; }
+.numField input,
+.numField select {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #1e293b;
+  font-size: 0.95rem;
+  outline: none;
+}
+.numSubmit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, #2dd4bf, #14b8a6);
+  color: #04201c;
+  font-weight: 700;
+  cursor: pointer;
+}
+.numSubmit:hover { filter: brightness(1.05); }
+
+/* ── Visited toggle + pickup pill (lead card) ── */
+.visitedToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+.visitedToggle input { cursor: pointer; accent-color: #14b8a6; }
+
+.pickPill {
+  margin-left: 8px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.pickPill.picked { background: #ecfdf5; color: #047857; }
+.pickPill.notpicked { background: #fff7ed; color: #c2410c; }

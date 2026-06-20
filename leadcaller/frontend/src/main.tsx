@@ -83,6 +83,14 @@ type Lead = {
   latest_callback_time?: string | null;
   latest_follow_up_required?: boolean | null;
   latest_follow_up_time?: string | null;
+  picked_up?: boolean | null;
+  next_scheduled_call_at?: string | null;
+  next_scheduled_call_reason?: string | null;
+  site_visit_fixed?: boolean | null;
+  site_visit_date?: string | null;
+  visited?: boolean | null;
+  visited_at?: string | null;
+  feedback_sent?: boolean | null;
 };
 
 type CallJob = {
@@ -287,7 +295,7 @@ function useDashboardData() {
     void load();
     const id = window.setInterval(() => {
       void load();
-    }, 30000);
+    }, 15000);
     return () => window.clearInterval(id);
   }, [load]);
 
@@ -496,17 +504,129 @@ function CallModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
   );
 }
 
+// Call any arbitrary phone number with the AI agent — no existing lead needed.
+function CallNumberModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [phone, setPhone] = React.useState("");
+  const [name, setName] = React.useState("");
+  const [language, setLanguage] = React.useState("english");
+  const [state, setState] = React.useState<"form" | "connecting" | "ended">("form");
+  const [error, setError] = React.useState<string | null>(null);
+
+  const submit = async () => {
+    if (!phone.trim()) {
+      setError("Enter a phone number (with country code).");
+      return;
+    }
+    setState("connecting");
+    setError(null);
+    try {
+      const res = await fetch(api("/admin/call-number"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone.trim(), name: name.trim() || undefined, language })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setState("ended");
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start call");
+      setState("form");
+    }
+  };
+
+  return (
+    <div className="modalOverlay" onClick={onClose}>
+      <div className="modalCard" onClick={(e) => e.stopPropagation()}>
+        <div className="modalHeader">
+          <div className="modalLeadInfo">
+            <div className="modalAvatar"><Bot size={20} /></div>
+            <div>
+              <strong>Call a number with AI</strong>
+              <span>The AI agent will call and talk directly</span>
+            </div>
+          </div>
+          <button className="modalClose" onClick={onClose} title="Close">✕</button>
+        </div>
+
+        {error && (
+          <div className="callError"><AlertCircle size={16} /><span>{error}</span></div>
+        )}
+
+        {state === "form" && (
+          <div className="numForm">
+            <label className="numField">
+              <span>Phone number (with country code)</span>
+              <input
+                type="text"
+                placeholder="e.g. +91XXXXXXXXXX"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoFocus
+              />
+            </label>
+            <label className="numField">
+              <span>Name (optional)</span>
+              <input
+                type="text"
+                placeholder="e.g. Darshan"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <label className="numField">
+              <span>Language</span>
+              <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                <option value="english">English</option>
+                <option value="hindi">Hindi</option>
+                <option value="kannada">Kannada</option>
+              </select>
+            </label>
+            <button className="numSubmit" onClick={() => void submit()}>
+              <Bot size={16} /><span>Let AI Talk</span>
+            </button>
+          </div>
+        )}
+
+        {state === "connecting" && (
+          <div className="callStatus"><div className="pulseRing" /><p>Placing the call…</p></div>
+        )}
+
+        {state === "ended" && (
+          <div className="callStatus">
+            <CheckCircle2 size={40} color="#047857" />
+            <p>Call request sent to {phone}. The AI will speak when they pick up.</p>
+            <button className="tableAction" style={{ marginTop: 8 }} onClick={onClose}>Close</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = React.useState<TabKey>("activity");
   const [query, setQuery] = React.useState("");
   const [callingLead, setCallingLead] = React.useState<Lead | null>(null);
   const [whatsAppTargetPhone, setWhatsAppTargetPhone] = React.useState<string | null>(null);
+  const [showCallNumber, setShowCallNumber] = React.useState(false);
   const data = useDashboardData();
 
   const openWhatsAppChat = React.useCallback((lead: Lead) => {
     setWhatsAppTargetPhone(lead.phone);
     setActiveTab("whatsapp");
   }, []);
+
+  const toggleVisited = React.useCallback(async (lead: Lead, visited: boolean) => {
+    try {
+      await fetch(api(`/admin/leads/${lead.id}/visit`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visited })
+      });
+    } finally {
+      data.load();
+    }
+  }, [data]);
 
   const filteredLeads = data.leads.filter((lead) =>
     [lead.name, lead.phone, lead.zoho_lead_id, lead.campaign, lead.city]
@@ -519,6 +639,7 @@ function App() {
   return (
     <div className="shell">
       {callingLead && <CallModal lead={callingLead} onClose={() => setCallingLead(null)} />}
+      {showCallNumber && <CallNumberModal onClose={() => setShowCallNumber(false)} onDone={data.load} />}
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark"><Activity size={22} /></div>
@@ -579,6 +700,10 @@ function App() {
                 placeholder="Search leads, phones, campaigns"
               />
             </label>
+            <button className="callNumberBtn" onClick={() => setShowCallNumber(true)} title="Call any number with AI">
+              <PhoneCall size={16} />
+              <span>Call a number</span>
+            </button>
             <button className="iconButton" onClick={data.load} title="Refresh dashboard data">
               <RefreshCcw size={18} />
             </button>
@@ -587,7 +712,7 @@ function App() {
 
         <div className="syncStrip">
           <span>{data.syncing ? "Syncing Zoho CRM..." : "Zoho CRM sync is automatic"}</span>
-          <b>Every 30s</b>
+          <b>Every 15s</b>
           <span>Last sync: {data.lastSyncedAt ? fmtDate(data.lastSyncedAt) : "-"}</span>
         </div>
 
@@ -618,6 +743,7 @@ function App() {
             syncLogs={data.syncLogs}
             onCallLead={setCallingLead}
             onWhatsAppLead={openWhatsAppChat}
+            onToggleVisited={toggleVisited}
           />
         )}
         {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={openWhatsAppChat} />}
@@ -738,7 +864,8 @@ function LeadActivityDashboard({
   followups,
   syncLogs,
   onCallLead,
-  onWhatsAppLead
+  onWhatsAppLead,
+  onToggleVisited
 }: {
   leads: Lead[];
   jobs: CallJob[];
@@ -747,6 +874,7 @@ function LeadActivityDashboard({
   syncLogs: CrmSyncLog[];
   onCallLead: (lead: Lead) => void;
   onWhatsAppLead: (lead: Lead) => void;
+  onToggleVisited: (lead: Lead, visited: boolean) => void;
 }) {
   const pendingCallbacks = jobs.filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested");
   const dueSoon = pendingCallbacks.filter((job) => isDueSoon(job.scheduled_at));
@@ -789,10 +917,23 @@ function LeadActivityDashboard({
           <article className="leadCard" key={lead.id}>
             <div className="leadCardTop">
               <div>
-                <h3>{lead.name}</h3>
+                <h3>
+                  {lead.name}
+                  {lead.picked_up
+                    ? <span className="pickPill picked" title="Lead has picked up a call">Picked up</span>
+                    : <span className="pickPill notpicked" title="Lead has not picked up yet">Not picked</span>}
+                </h3>
                 <p>{lead.phone} {lead.city ? `• ${lead.city}` : ""}</p>
               </div>
               <div className="leadActions">
+                <label className="visitedToggle" title="Mark whether this lead has visited the site">
+                  <input
+                    type="checkbox"
+                    checked={!!lead.visited}
+                    onChange={(e) => onToggleVisited(lead, e.target.checked)}
+                  />
+                  <span>Visited</span>
+                </label>
                 <button className="callLeadBtn" onClick={() => onCallLead(lead)} title={`Call ${lead.name}`}>
                   <Phone size={13} />
                   <span>Call</span>
@@ -805,10 +946,21 @@ function LeadActivityDashboard({
             </div>
 
             <div className="leadInsightGrid">
-              <div className={nextCallback ? "insightBox callbackBox" : "insightBox"}>
-                <span>Next callback</span>
-                <strong>{nextCallback ? fmtDate(nextCallback.scheduled_at) : "None scheduled"}</strong>
-                <small>{nextCallback?.trigger_reason || lead.latest_callback_time || "-"}</small>
+              <div className={nextCallback || lead.next_scheduled_call_at ? "insightBox callbackBox" : "insightBox"}>
+                <span>Next scheduled call</span>
+                <strong>
+                  {nextCallback
+                    ? fmtDate(nextCallback.scheduled_at)
+                    : lead.next_scheduled_call_at
+                      ? fmtDate(lead.next_scheduled_call_at)
+                      : "None scheduled"}
+                </strong>
+                <small>{nextCallback?.trigger_reason || lead.next_scheduled_call_reason || lead.latest_callback_time || "-"}</small>
+              </div>
+              <div className={lead.site_visit_fixed ? "insightBox callbackBox" : "insightBox"}>
+                <span>Site visit</span>
+                <strong>{lead.visited ? "Visited ✓" : lead.site_visit_fixed ? "Fixed" : "Not fixed"}</strong>
+                <small>{lead.site_visit_date || (lead.feedback_sent ? "feedback sent" : "-")}</small>
               </div>
               <div className="insightBox">
                 <span>Latest outcome</span>

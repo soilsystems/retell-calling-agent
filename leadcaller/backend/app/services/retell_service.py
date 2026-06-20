@@ -26,7 +26,12 @@ from app.models import (
     WebhookSource,
 )
 from app.schemas.retell_schema import RetellCallCompletedWebhook, RetellStructuredData
-from app.utils.business_hours import get_next_business_day_at_10am, is_business_hours, next_business_slot
+from app.utils.business_hours import (
+    get_next_business_day_at_10am,
+    is_business_hours,
+    next_business_slot,
+    next_twice_daily_slot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,9 @@ from app.call_scripts import LANGUAGE_ADAPTATION_INSTRUCTION  # noqa: E402 — r
 # rolling window. Beyond this, callbacks stop auto-dialing (human follow-up).
 MAX_CALLBACKS_PER_WINDOW = 3
 MAX_CALLBACK_WINDOW_HOURS = 2
+
+# Un-answered leads are re-called twice a day (10am & 2pm IST) for 5 days.
+NO_ANSWER_MAX_RETRIES = 10
 
 
 def _utcnow() -> datetime:
@@ -358,7 +366,13 @@ async def schedule_retry(
         return
 
     retry_count = call_job.retry_count or 0
-    max_retries = call_job.max_retries or 3
+    # Un-answered leads get a more persistent cadence: twice a day (10am & 2pm
+    # IST) for 5 days = up to 10 attempts, until they pick up. Other failure
+    # reasons keep the job's normal max_retries.
+    if failure_reason == "no_answer":
+        max_retries = max(call_job.max_retries or 0, NO_ANSWER_MAX_RETRIES)
+    else:
+        max_retries = call_job.max_retries or 3
     if retry_count >= max_retries:
         call_job.status = CallJobStatus.cancelled
         await db.commit()
@@ -367,7 +381,8 @@ async def schedule_retry(
 
     if scheduled_at is None:
         if failure_reason == "no_answer":
-            scheduled_at = get_next_business_day_at_10am()
+            # Next 10am/2pm IST slot — re-call morning & afternoon each day.
+            scheduled_at = next_twice_daily_slot(_utcnow())
         elif failure_reason == "busy":
             scheduled_at = _utcnow() + timedelta(minutes=30)
         elif failure_reason == "failed":
@@ -512,8 +527,25 @@ async def process_retell_completion(
     await db.commit()
     await db.refresh(attempt)
     await _update_inbound_lead_details(attempt.call_job.lead, attempt.structured_data or {}, db)
+    await _apply_site_visit(attempt.call_job.lead, attempt.structured_data or {}, db)
     await _schedule_callback_if_requested(attempt, attempt.structured_data or {}, db)
     return attempt
+
+
+async def _apply_site_visit(lead: Lead, structured: dict[str, Any], db: AsyncSession) -> None:
+    """Mirror the call's site-visit outcome onto the lead so the dashboard can
+    show who has a visit fixed. Never un-fixes a previously fixed visit."""
+    if structured.get("site_visit_agreed") is True:
+        changed = False
+        if not lead.site_visit_fixed:
+            lead.site_visit_fixed = True
+            changed = True
+        day = structured.get("site_visit_day")
+        if day and lead.site_visit_date != str(day):
+            lead.site_visit_date = str(day)
+            changed = True
+        if changed:
+            await db.commit()
 
 
 # Inbound calls whose real-caller resolution is already being polled in the

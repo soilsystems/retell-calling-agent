@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, Index, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,6 +33,15 @@ class Lead(Base):
     )
     source: Mapped[str | None] = mapped_column(String(120))
     campaign: Mapped[str | None] = mapped_column(String(120))
+    # Site-visit tracking. site_visit_fixed/date mirror the latest call's
+    # structured data (the AI fixed a visit); visited is a manual flag set from
+    # the dashboard once the person actually shows up, which triggers a
+    # feedback WhatsApp (guarded by feedback_sent).
+    site_visit_fixed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    site_visit_date: Mapped[str | None] = mapped_column(String(120))
+    visited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    visited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    feedback_sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False

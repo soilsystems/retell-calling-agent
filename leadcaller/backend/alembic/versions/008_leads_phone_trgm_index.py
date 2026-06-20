@@ -21,16 +21,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Run outside the migration's wrapping transaction so we can:
-    #   1. SET statement_timeout = 0     (Supabase's default kills slow DDL)
-    #   2. CREATE INDEX CONCURRENTLY     (forbidden inside a transaction)
-    with op.get_context().autocommit_block():
-        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-        op.execute("SET statement_timeout = 0")
-        op.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_leads_phone_trgm "
-            "ON leads USING gin (phone gin_trgm_ops)"
-        )
+    # Ensure the extension only — it's fast and idempotent.
+    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    # We deliberately DO NOT build the trgm index here. The original migration
+    # used CREATE INDEX CONCURRENTLY, which hangs forever against Supabase's
+    # transaction pooler (port 6543) — it left several zombie backends holding
+    # locks for over a day and blocked every deploy. At current table sizes a
+    # sequential scan on leads.phone is microseconds, so the index isn't needed.
+    # When the leads table grows large, build it once over a DIRECT (session,
+    # port 5432) connection:
+    #   CREATE INDEX CONCURRENTLY ix_leads_phone_trgm
+    #     ON leads USING gin (phone gin_trgm_ops);
 
 
 def downgrade() -> None:

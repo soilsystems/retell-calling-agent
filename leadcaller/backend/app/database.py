@@ -21,6 +21,10 @@ engine = create_async_engine(
         "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
     }
 )
+# NOTE: Supabase's transaction pooler (port 6543) ignores session GUCs like
+# idle_in_transaction_session_timeout set via server_settings, so leaked
+# "idle in transaction" backends can't be capped at the connection level.
+# Instead a scheduled sweeper (sweep_idle_db_connections) terminates them.
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     autoflush=False,

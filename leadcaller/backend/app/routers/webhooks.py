@@ -283,6 +283,10 @@ async def exotel_status(
         status, lead.id, attempt.call_job_id,
     )
     background_tasks.add_task(schedule_retry, attempt.call_job_id, "no_answer")
+    # Send the brochure template on the FIRST missed attempt only (not on every
+    # retry) so a lead who never picks up still receives our WhatsApp follow-up.
+    if attempt.attempt_number == 1:
+        background_tasks.add_task(send_post_call_template, attempt.id)
     return JSONResponse(
         status_code=200,
         content={"status": "accepted", "retry": "no_answer", "exotel_status": status, "call_attempt_id": str(attempt.id)},

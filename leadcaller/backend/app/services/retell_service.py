@@ -655,6 +655,38 @@ async def run_scheduled_calls() -> None:
             logger.error("[Scheduler] run_scheduled_calls failed: %s", exc, exc_info=True)
 
 
+async def sweep_idle_db_connections() -> None:
+    """Terminate zombie 'idle in transaction' backends.
+
+    Supabase's transaction pooler ignores idle_in_transaction_session_timeout,
+    so leaked transactions (a session/background-task closed mid-transaction)
+    accumulate as server-side zombies that hold locks and exhaust connection
+    slots — which surfaces as statement-timeout errors in the call webhooks.
+    This runs periodically and kills any transaction idle for >5 minutes
+    (legitimate transactions are never idle that long).
+    """
+    from sqlalchemy import text
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(text(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'idle in transaction'
+                  AND state_change < now() - interval '5 minutes'
+                """
+            ))
+            killed = sum(1 for row in result if row[0])
+            await db.commit()
+            if killed:
+                logger.warning("[Sweeper] terminated %s idle-in-transaction zombie backend(s)", killed)
+    except Exception as exc:
+        logger.error("[Sweeper] sweep_idle_db_connections failed: %s", exc)
+
+
 def _map_retell_status(status: str) -> CallAttemptStatus:
     normalized = status.lower().replace("-", "_")
     if normalized in {"not_connected", "no_answer"}:

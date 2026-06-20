@@ -13,7 +13,7 @@ from app.routers.debug import router as debug_router
 from app.routers.meta_webhook import router as meta_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers import whatsapp
-from app.services.retell_service import run_scheduled_calls
+from app.services.retell_service import run_scheduled_calls, sweep_idle_db_connections
 
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -38,6 +38,13 @@ async def lifespan(app: FastAPI):
             trigger="interval",
             minutes=1,
             id="scheduled_calls",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            sweep_idle_db_connections,
+            trigger="interval",
+            minutes=5,
+            id="sweep_idle_db_connections",
             replace_existing=True,
         )
         scheduler.start()

@@ -887,7 +887,12 @@ function LeadActivityDashboard({
   onWhatsAppLead: (lead: Lead) => void;
   onToggleVisited: (lead: Lead, visited: boolean) => void;
 }) {
-  const pendingCallbacks = jobs.filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested");
+  // A pending call scheduled for later — either a requested callback OR an
+  // automatic retry because the lead didn't pick up (no-answer/busy/failed).
+  const isPendingCallback = (job: CallJob) =>
+    job.status === "pending" &&
+    ["callback_requested", "no_answer_retry", "busy_retry", "failed_retry"].includes(job.trigger_reason || "");
+  const pendingCallbacks = jobs.filter(isPendingCallback);
   const dueSoon = pendingCallbacks.filter((job) => isDueSoon(job.scheduled_at));
   const recentFailures = syncLogs.filter((log) => !log.success).slice(0, 5);
   const rows = leads.map((lead) => {
@@ -896,7 +901,7 @@ function LeadActivityDashboard({
     const leadFollowups = followups.filter((followup) => followup.lead_id === lead.id);
     const latestAttempt = leadAttempts[0];
     const nextCallback = leadJobs
-      .filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested")
+      .filter(isPendingCallback)
       .sort((a, b) => new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime())[0];
     // Most recent call activity (last dialed/called) — used to sort the list.
     const lastActivity = Math.max(

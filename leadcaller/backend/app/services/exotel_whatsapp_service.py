@@ -172,23 +172,34 @@ async def send_template(
     name: str,
     language: str = "en",
     body_params: list[str] | None = None,
+    header_document: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Send a pre-approved WhatsApp template via Exotel.
 
     Templates bypass the 24-hour conversation window restriction. The template
     must already be approved in your Exotel WhatsApp dashboard.
+
+    header_document: {"link": <pdf url>, "filename": <name>} for templates whose
+    approved header is a Document (e.g. woods_and_spices). Required — Meta drops
+    the message (EX_TEMPLATE_PARAM_ERROR) if the header component is omitted.
     """
     template: dict[str, Any] = {
         "name": name,
         "language": {"code": language},
     }
+    components: list[dict[str, Any]] = []
+    if header_document:
+        components.append({
+            "type": "header",
+            "parameters": [{"type": "document", "document": header_document}],
+        })
     if body_params:
-        template["components"] = [
-            {
-                "type": "body",
-                "parameters": [{"type": "text", "text": str(p)} for p in body_params],
-            }
-        ]
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(p)} for p in body_params],
+        })
+    if components:
+        template["components"] = components
     return await _post(
         _envelope(_normalize_to(to), {"type": "template", "template": template})
     )
@@ -312,13 +323,23 @@ async def _send_post_call_template_inner(
         logger.warning("[ExotelWA] post-call template skipped: invalid phone=%s lead=%s", lead.phone, lead.id)
         return
 
+    # Attach the required Document header (brochure PDF) — without it Meta drops
+    # the message with EX_TEMPLATE_PARAM_ERROR.
+    header_document = None
+    doc_url = getattr(settings, "EXOTEL_WA_TEMPLATE_POST_CALL_DOC_URL", None)
+    if doc_url:
+        header_document = {
+            "link": doc_url,
+            "filename": getattr(settings, "EXOTEL_WA_TEMPLATE_POST_CALL_DOC_NAME", "brochure.pdf"),
+        }
+
     logger.info(
-        "[ExotelWA] sending post-call template=%s to lead=%s name=%s phone=%s",
-        template_name, lead.id, lead.name, phone,
+        "[ExotelWA] sending post-call template=%s to lead=%s name=%s phone=%s (doc=%s)",
+        template_name, lead.id, lead.name, phone, bool(header_document),
     )
 
     try:
-        response = await send_template(phone, template_name, language=language)
+        response = await send_template(phone, template_name, language=language, header_document=header_document)
         await _log_outbound_template(db, phone=phone, template_name=template_name, response=response, error=None)
         logger.info("[ExotelWA] post-call template SENT lead=%s sid=%s", lead.id, _extract_provider_sid(response))
     except HTTPException as exc:

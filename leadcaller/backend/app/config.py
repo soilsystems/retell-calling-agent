@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # Template sent automatically to every lead after a call ends.
     EXOTEL_WA_TEMPLATE_POST_CALL: str = "woods_and_spices"
     EXOTEL_WA_TEMPLATE_POST_CALL_LANG: str = "en"
+    # woods_and_spices has a required Document header (the brochure PDF). Meta
+    # drops the message (EX_TEMPLATE_PARAM_ERROR) if it isn't attached.
+    EXOTEL_WA_TEMPLATE_POST_CALL_DOC_URL: str = (
+        "https://www.soilsystems.in/_files/ugd/6c151e_1f49d9ce4c1242cdbc5550f67ca0d18d.pdf"
+    )
+    EXOTEL_WA_TEMPLATE_POST_CALL_DOC_NAME: str = "Woods-and-Spices.pdf"
     # Template sent when a lead is manually marked as "visited" on the dashboard.
     EXOTEL_WA_TEMPLATE_FEEDBACK: str = "visit_feedback"
     EXOTEL_WA_TEMPLATE_FEEDBACK_LANG: str = "en"

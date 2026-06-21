@@ -397,12 +397,16 @@ async def _ensure_exotel_call_attempt(
         call_job.status = CallJobStatus.completed
         call_job.completed_at = call_job.completed_at or now
 
+    # Exotel's status callback carries the call recording (the full bridged
+    # audio). Store it so the attempt shows a recording in the dashboard.
+    recording_url = _payload_value(payload, "RecordingUrl", "recording_url", "Recording")
     attempt_count = await db.scalar(select(func.count(CallAttempt.id)).where(CallAttempt.call_job_id == call_job.id))
     attempt = CallAttempt(
         call_job_id=call_job.id,
         retell_call_id=retell_call_id,
         attempt_number=int(attempt_count or 0) + 1,
         status=attempt_status,
+        recording_url=str(recording_url) if recording_url else None,
         structured_data={"source": "exotel", "status_callback": payload},
         started_at=now,
         ended_at=now,

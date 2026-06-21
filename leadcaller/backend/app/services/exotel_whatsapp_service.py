@@ -94,7 +94,13 @@ async def _post(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _envelope(to: str, content: dict[str, Any]) -> dict[str, Any]:
-    return {"from": _from_number(), "to": to, "content": content}
+    env: dict[str, Any] = {"from": _from_number(), "to": to, "content": content}
+    # Ask Exotel/Meta to POST delivery receipts (DLR) back so we can see whether
+    # the message was actually delivered, restricted by Meta, or dropped.
+    base = (get_settings().BASE_URL or "").rstrip("/")
+    if base:
+        env["status_callback"] = f"{base}/webhooks/whatsapp/status"
+    return env
 
 
 def _normalize_to(to: str) -> str:

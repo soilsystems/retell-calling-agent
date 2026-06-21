@@ -299,6 +299,12 @@ function useDashboardData() {
     return () => window.clearInterval(id);
   }, [load]);
 
+  // Optimistic single-lead patch — lets the UI reflect a change (e.g. the
+  // Visited checkbox) instantly without waiting for a full reload.
+  const patchLead = React.useCallback((id: string, changes: Partial<Lead>) => {
+    setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, ...changes } : l)));
+  }, []);
+
   return {
     summary,
     health,
@@ -312,7 +318,8 @@ function useDashboardData() {
     syncing,
     lastSyncedAt,
     error,
-    load
+    load,
+    patchLead
   };
 }
 
@@ -617,14 +624,18 @@ function App() {
   }, []);
 
   const toggleVisited = React.useCallback(async (lead: Lead, visited: boolean) => {
+    // Optimistic: flip the checkbox immediately.
+    data.patchLead(lead.id, { visited, visited_at: visited ? new Date().toISOString() : null });
     try {
-      await fetch(api(`/admin/leads/${lead.id}/visit`), {
+      const res = await fetch(api(`/admin/leads/${lead.id}/visit`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ visited })
       });
-    } finally {
-      data.load();
+      if (!res.ok) throw new Error(await res.text());
+    } catch {
+      // Revert on failure.
+      data.patchLead(lead.id, { visited: !visited });
     }
   }, [data]);
 

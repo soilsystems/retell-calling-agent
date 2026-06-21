@@ -229,25 +229,49 @@ async def _log_outbound_template(
     await db.commit()
 
 
+# Attempts whose post-call template has already been sent/claimed this process
+# run. Retell fires call_ended AND call_analyzed (and the call-number path may
+# add another), each queuing this task — without this guard the lead gets the
+# template 2-3 times, which also burns through Meta's per-user rate limit.
+# Membership check + add is atomic in single-threaded asyncio.
+_post_call_template_claims: set[str] = set()
+
+
 async def send_post_call_template(
     call_attempt_id: uuid_lib.UUID,
     db: AsyncSession | None = None,
 ) -> None:
     """Send the post-call WhatsApp template to a lead after a call ends.
 
-    Triggered from the Retell call_completed webhook. Always logs entry/exit so
-    silent failures are visible in uvicorn logs. Always writes a row to
-    whatsapp_messages — success or failure — so the chat UI reflects what
-    happened.
+    Triggered from the Retell call_completed webhook. Deduped so each call's
+    template goes out exactly once. Always writes a row to whatsapp_messages so
+    the chat UI reflects what happened.
     """
+    key = str(call_attempt_id)
+    if key in _post_call_template_claims:
+        logger.info("[ExotelWA] post-call template already sent/claimed for attempt=%s — skipping", call_attempt_id)
+        return
+    if len(_post_call_template_claims) > 5000:
+        _post_call_template_claims.clear()
+    _post_call_template_claims.add(key)
+
     logger.info("[ExotelWA] post-call template task START for attempt=%s", call_attempt_id)
     if db is None:
         try:
             async with AsyncSessionLocal() as session:
-                await send_post_call_template(call_attempt_id, session)
+                await _send_post_call_template_inner(call_attempt_id, session, key)
         except Exception as exc:
+            _post_call_template_claims.discard(key)
             logger.exception("[ExotelWA] post-call template task CRASHED at session level: %s", exc)
         return
+    await _send_post_call_template_inner(call_attempt_id, db, key)
+
+
+async def _send_post_call_template_inner(
+    call_attempt_id: uuid_lib.UUID,
+    db: AsyncSession,
+    claim_key: str,
+) -> None:
 
     settings = get_settings()
     template_name = settings.EXOTEL_WA_TEMPLATE_POST_CALL
@@ -292,6 +316,7 @@ async def send_post_call_template(
         await _log_outbound_template(db, phone=phone, template_name=template_name, response=response, error=None)
         logger.info("[ExotelWA] post-call template SENT lead=%s sid=%s", lead.id, _extract_provider_sid(response))
     except HTTPException as exc:
+        _post_call_template_claims.discard(claim_key)  # allow retry on the next event
         err = str(exc.detail)
         logger.warning("[ExotelWA] post-call template HTTP-failed lead=%s: %s", lead.id, err[:500])
         try:
@@ -299,6 +324,7 @@ async def send_post_call_template(
         except Exception as log_exc:
             logger.exception("[ExotelWA] additionally failed to log error row: %s", log_exc)
     except Exception as exc:
+        _post_call_template_claims.discard(claim_key)  # allow retry on the next event
         err = f"{type(exc).__name__}: {exc}"
         logger.exception("[ExotelWA] post-call template CRASHED lead=%s", lead.id)
         try:

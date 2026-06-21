@@ -411,7 +411,10 @@ async def test_retell_inbound_sid_mismatch_falls_back_to_lifo_when_from_exophone
 
 
 @pytest.mark.asyncio
-async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
+async def test_exotel_completed_status_records_attempt(client, monkeypatch):
+    # A 'completed' Exotel status records the attempt but does NOT send WhatsApp
+    # here — the Retell call_completed handler sends the post-call template, so
+    # sending here too would double-message the lead.
     lead = Lead(
         id=uuid4(),
         zoho_lead_id="zoho-1",
@@ -422,7 +425,6 @@ async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
         language_preference=LanguagePreference.english,
     )
     attempt_id = uuid4()
-    captured = {}
 
     class Db:
         pass
@@ -431,15 +433,11 @@ async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
         yield Db()
 
     async def fake_find_lead(payload, db):
-        captured["payload"] = payload
         return lead
 
-    async def fake_ensure_attempt(found_lead, payload, db):
+    async def fake_ensure_attempt(found_lead, payload, db, **kwargs):
         assert found_lead is lead
         return SimpleNamespace(id=attempt_id)
-
-    async def fake_send_whatsapp(call_attempt_id):
-        captured["call_attempt_id"] = call_attempt_id
 
     from app.database import get_db
     from app.main import app
@@ -447,7 +445,6 @@ async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
     app.dependency_overrides[get_db] = fake_get_db
     monkeypatch.setattr("app.routers.webhooks._find_lead_for_exotel_status", fake_find_lead)
     monkeypatch.setattr("app.routers.webhooks._ensure_exotel_call_attempt", fake_ensure_attempt)
-    monkeypatch.setattr("app.routers.webhooks.send_whatsapp_for_call", fake_send_whatsapp)
 
     response = await client.post(
         "/webhooks/exotel/status",
@@ -460,9 +457,8 @@ async def test_exotel_completed_status_enqueues_whatsapp(client, monkeypatch):
     app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json()["whatsapp"] == "queued"
     assert response.json()["call_attempt_id"] == str(attempt_id)
-    assert captured["call_attempt_id"] == attempt_id
+    assert "whatsapp" not in response.json()
 
 
 @pytest.mark.asyncio

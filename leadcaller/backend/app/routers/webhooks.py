@@ -262,11 +262,14 @@ async def exotel_status(
         return JSONResponse(status_code=200, content={"status": "accepted", "resolve": "lead_not_found"})
 
     if answered:
+        # Just record the attempt. The post-call WhatsApp template is sent by
+        # the Retell call_completed handler (send_post_call_template →
+        # woods_and_spices); sending here too would double-message the lead with
+        # the legacy soil_systems template and burn Meta's per-user rate limit.
         attempt = await _ensure_exotel_call_attempt(lead, payload, db)
-        background_tasks.add_task(send_whatsapp_for_call, attempt.id)
         return JSONResponse(
             status_code=200,
-            content={"status": "accepted", "whatsapp": "queued", "call_attempt_id": str(attempt.id)},
+            content={"status": "accepted", "call_attempt_id": str(attempt.id)},
         )
 
     # Not answered → record the attempt and schedule the twice-daily retry.

@@ -898,8 +898,16 @@ function LeadActivityDashboard({
     const nextCallback = leadJobs
       .filter((job) => job.status === "pending" && job.trigger_reason === "callback_requested")
       .sort((a, b) => new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime())[0];
-    return { lead, leadJobs, leadAttempts, leadFollowups, latestAttempt, nextCallback };
+    // Most recent call activity (last dialed/called) — used to sort the list.
+    const lastActivity = Math.max(
+      0,
+      ...leadAttempts.map((a) => new Date(a.started_at || a.ended_at || 0).getTime()),
+      ...leadJobs.map((j) => new Date(j.started_at || j.created_at || 0).getTime())
+    );
+    return { lead, leadJobs, leadAttempts, leadFollowups, latestAttempt, nextCallback, lastActivity };
   });
+  // Most recently called/dialed leads first; leads with no activity fall below.
+  rows.sort((a, b) => b.lastActivity - a.lastActivity);
 
   return (
     <section className="content">

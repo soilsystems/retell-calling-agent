@@ -262,14 +262,18 @@ async def exotel_status(
         return JSONResponse(status_code=200, content={"status": "accepted", "resolve": "lead_not_found"})
 
     if answered:
-        # Just record the attempt. The post-call WhatsApp template is sent by
-        # the Retell call_completed handler (send_post_call_template →
-        # woods_and_spices); sending here too would double-message the lead with
-        # the legacy soil_systems template and burn Meta's per-user rate limit.
-        attempt = await _ensure_exotel_call_attempt(lead, payload, db)
+        # Don't create a duplicate row — Retell's call_completed already records
+        # this call (summary + transcript + its own recording). Just attach
+        # Exotel's full-call recording to that attempt if it's missing one, so
+        # each connected call shows as a SINGLE attempt. (WhatsApp is sent by
+        # the Retell handler, not here.)
+        recording_url = _payload_value(payload, "RecordingUrl", "recording_url", "Recording")
+        updated = await _attach_recording_to_recent_attempt(
+            lead, str(recording_url) if recording_url else None, db
+        )
         return JSONResponse(
             status_code=200,
-            content={"status": "accepted", "call_attempt_id": str(attempt.id)},
+            content={"status": "accepted", "recording_attached": updated},
         )
 
     # Not answered → record the attempt and schedule the twice-daily retry.
@@ -356,6 +360,32 @@ async def _find_lead_for_exotel_status(payload: dict[str, Any], db: AsyncSession
         if lead:
             return lead
     return None
+
+
+async def _attach_recording_to_recent_attempt(
+    lead: Lead, recording_url: str | None, db: AsyncSession
+) -> bool:
+    """Attach a recording to the lead's most recent attempt if it lacks one.
+
+    Used by the Exotel 'completed' status so a connected call shows as a single
+    attempt (the Retell-created one) with a recording — instead of a duplicate
+    Exotel row. Returns True if an attempt was updated.
+    """
+    if not recording_url:
+        return False
+    result = await db.execute(
+        select(CallAttempt)
+        .join(CallJob, CallAttempt.call_job_id == CallJob.id)
+        .where(CallJob.lead_id == lead.id)
+        .order_by(desc(CallAttempt.started_at))
+        .limit(1)
+    )
+    attempt = result.scalar_one_or_none()
+    if attempt and not attempt.recording_url:
+        attempt.recording_url = recording_url
+        await db.commit()
+        return True
+    return False
 
 
 async def _ensure_exotel_call_attempt(

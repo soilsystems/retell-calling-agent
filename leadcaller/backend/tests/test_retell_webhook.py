@@ -411,10 +411,10 @@ async def test_retell_inbound_sid_mismatch_falls_back_to_lifo_when_from_exophone
 
 
 @pytest.mark.asyncio
-async def test_exotel_completed_status_records_attempt(client, monkeypatch):
-    # A 'completed' Exotel status records the attempt but does NOT send WhatsApp
-    # here — the Retell call_completed handler sends the post-call template, so
-    # sending here too would double-message the lead.
+async def test_exotel_completed_status_attaches_recording_no_duplicate(client, monkeypatch):
+    # A 'completed' Exotel status must NOT create a duplicate attempt (Retell's
+    # call_completed already recorded the call). It only attaches Exotel's
+    # recording to the existing attempt, and never sends WhatsApp here.
     lead = Lead(
         id=uuid4(),
         zoho_lead_id="zoho-1",
@@ -424,7 +424,7 @@ async def test_exotel_completed_status_records_attempt(client, monkeypatch):
         campaign="May Campaign",
         language_preference=LanguagePreference.english,
     )
-    attempt_id = uuid4()
+    captured = {}
 
     class Db:
         pass
@@ -435,9 +435,12 @@ async def test_exotel_completed_status_records_attempt(client, monkeypatch):
     async def fake_find_lead(payload, db):
         return lead
 
-    async def fake_ensure_attempt(found_lead, payload, db, **kwargs):
-        assert found_lead is lead
-        return SimpleNamespace(id=attempt_id)
+    async def fake_ensure_attempt(*args, **kwargs):
+        raise AssertionError("must NOT create a duplicate attempt on 'completed'")
+
+    async def fake_attach(found_lead, recording_url, db):
+        captured["recording_url"] = recording_url
+        return True
 
     from app.database import get_db
     from app.main import app
@@ -445,19 +448,22 @@ async def test_exotel_completed_status_records_attempt(client, monkeypatch):
     app.dependency_overrides[get_db] = fake_get_db
     monkeypatch.setattr("app.routers.webhooks._find_lead_for_exotel_status", fake_find_lead)
     monkeypatch.setattr("app.routers.webhooks._ensure_exotel_call_attempt", fake_ensure_attempt)
+    monkeypatch.setattr("app.routers.webhooks._attach_recording_to_recent_attempt", fake_attach)
 
     response = await client.post(
         "/webhooks/exotel/status",
         data={
             "CallStatus": "completed",
             "CallSid": "exotel-call-1",
+            "RecordingUrl": "https://recordings.exotel.com/abc.mp3",
             "CustomField": json.dumps({"lead_id": str(lead.id), "lead_phone": lead.phone}),
         },
     )
     app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json()["call_attempt_id"] == str(attempt_id)
+    assert response.json()["recording_attached"] is True
+    assert captured["recording_url"] == "https://recordings.exotel.com/abc.mp3"
     assert "whatsapp" not in response.json()
 
 

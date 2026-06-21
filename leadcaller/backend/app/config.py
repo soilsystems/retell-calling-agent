@@ -94,9 +94,14 @@ class Settings(BaseSettings):
         "https://www.soilsystems.in/_files/ugd/6c151e_1f49d9ce4c1242cdbc5550f67ca0d18d.pdf"
     )
     EXOTEL_WA_TEMPLATE_POST_CALL_DOC_NAME: str = "Woods-and-Spices.pdf"
-    # Template sent when a lead is manually marked as "visited" on the dashboard.
-    EXOTEL_WA_TEMPLATE_FEEDBACK: str = "visit_feedback"
-    EXOTEL_WA_TEMPLATE_FEEDBACK_LANG: str = "en"
+    # Sent as a plain WhatsApp text (NOT a template) when a lead is marked
+    # "visited" on the dashboard. Free-text only delivers inside the lead's
+    # 24h conversation window.
+    WA_FEEDBACK_MESSAGE: str = (
+        "Hi! 🌳 Thank you for visiting our Woods & Spices site. "
+        "We'd love to hear your feedback — how was your experience? "
+        "Just reply here, or call us anytime."
+    )
     BOOKING_LINK: str = "https://soilsystems.in/book"
 
     BASE_URL: str

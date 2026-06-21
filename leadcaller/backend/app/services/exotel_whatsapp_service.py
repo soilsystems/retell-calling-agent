@@ -364,28 +364,29 @@ async def send_feedback_template(
     lead_id: uuid_lib.UUID,
     db: AsyncSession | None = None,
 ) -> None:
-    """Send the post-visit feedback WhatsApp template to a lead.
+    """Send a post-visit feedback WhatsApp to a lead as a PLAIN TEXT message
+    (not a template), triggered when the lead is marked "visited".
 
-    Triggered when a lead is marked "visited" on the dashboard. Sets
-    lead.feedback_sent on success so it's only ever sent once. Logs a row to
-    whatsapp_messages so the send shows up in the chat UI.
+    NOTE: WhatsApp only delivers free-text inside the lead's 24-hour
+    conversation window (i.e. they messaged us in the last 24h). Outside it,
+    Meta requires a template. Sets lead.feedback_sent on success so it's only
+    sent once; logs to whatsapp_messages so it shows in the chat UI.
     """
-    logger.info("[ExotelWA] feedback template task START for lead=%s", lead_id)
+    logger.info("[ExotelWA] feedback message task START for lead=%s", lead_id)
     if db is None:
         try:
             async with AsyncSessionLocal() as session:
                 await send_feedback_template(lead_id, session)
         except Exception as exc:
-            logger.exception("[ExotelWA] feedback template task CRASHED at session level: %s", exc)
+            logger.exception("[ExotelWA] feedback message task CRASHED at session level: %s", exc)
         return
 
     settings = get_settings()
-    template_name = settings.EXOTEL_WA_TEMPLATE_FEEDBACK
-    language = settings.EXOTEL_WA_TEMPLATE_FEEDBACK_LANG
+    message = settings.WA_FEEDBACK_MESSAGE
 
     lead = await db.get(Lead, lead_id)
     if not lead:
-        logger.warning("[ExotelWA] feedback template skipped: lead %s not found", lead_id)
+        logger.warning("[ExotelWA] feedback message skipped: lead %s not found", lead_id)
         return
     if lead.feedback_sent:
         logger.info("[ExotelWA] feedback already sent for lead=%s — skipping", lead_id)
@@ -393,20 +394,28 @@ async def send_feedback_template(
 
     phone = format_phone_for_whatsapp(lead.phone)
     if not phone:
-        logger.warning("[ExotelWA] feedback template skipped: invalid phone=%s lead=%s", lead.phone, lead.id)
+        logger.warning("[ExotelWA] feedback message skipped: invalid phone=%s lead=%s", lead.phone, lead.id)
         return
 
-    logger.info("[ExotelWA] sending feedback template=%s to lead=%s phone=%s", template_name, lead.id, phone)
+    logger.info("[ExotelWA] sending feedback TEXT to lead=%s phone=%s", lead.id, phone)
     try:
-        response = await send_template(phone, template_name, language=language)
-        await _log_outbound_template(db, phone=phone, template_name=template_name, response=response, error=None)
+        response = await send_text(phone, message)
+        # Log the outbound text into the chat thread.
+        msg = WhatsAppMessage(
+            phone=phone,
+            direction=WhatsAppMessageDirection.outbound,
+            message_type=WhatsAppMessageType.text,
+            body=message,
+            provider_message_id=_extract_provider_sid(response),
+            raw_payload={"feedback": True, "response": response},
+        )
+        db.add(msg)
         lead.feedback_sent = True
         await db.commit()
-        logger.info("[ExotelWA] feedback template SENT lead=%s sid=%s", lead.id, _extract_provider_sid(response))
+        logger.info("[ExotelWA] feedback TEXT SENT lead=%s sid=%s", lead.id, _extract_provider_sid(response))
     except Exception as exc:
         err = f"{type(exc).__name__}: {getattr(exc, 'detail', exc)}"
-        logger.warning("[ExotelWA] feedback template failed lead=%s: %s", lead.id, err[:500])
-        try:
-            await _log_outbound_template(db, phone=phone, template_name=template_name, response=None, error=err[:500])
-        except Exception as log_exc:
-            logger.exception("[ExotelWA] additionally failed to log error row: %s", log_exc)
+        logger.warning(
+            "[ExotelWA] feedback TEXT failed lead=%s: %s (note: free-text needs an open 24h window)",
+            lead.id, err[:500],
+        )

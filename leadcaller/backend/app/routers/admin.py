@@ -144,20 +144,26 @@ async def sync_zoho(limit: int = 100, db: AsyncSession = Depends(get_db)) -> dic
 @router.get("/leads")
 async def leads(limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     limit = min(max(limit, 1), 500)
-    # Order by most-recent call activity first so a just-called number (even a
-    # manually-dialled one) is in the returned set and bubbles to the top of
-    # Lead Activity — not buried below the zoho_lead_id ordering.
-    last_activity = (
+    # Order by most-recent ACTIVITY = the latest of (last call, lead updated,
+    # lead created). This keeps a just-called number near the top AND surfaces
+    # brand-new Meta/Zoho leads (which have no calls yet) — without either being
+    # buried outside the row limit.
+    last_call = (
         select(func.max(CallAttempt.started_at))
         .join(CallJob, CallAttempt.call_job_id == CallJob.id)
         .where(CallJob.lead_id == Lead.id)
         .correlate(Lead)
         .scalar_subquery()
     )
+    activity_rank = func.greatest(
+        func.coalesce(last_call, Lead.created_at),
+        func.coalesce(Lead.updated_at, Lead.created_at),
+        Lead.created_at,
+    )
     result = await db.execute(
         select(Lead)
         .options(selectinload(Lead.call_jobs).selectinload(CallJob.attempts))
-        .order_by(desc(last_activity).nullslast(), desc(Lead.updated_at), desc(Lead.created_at))
+        .order_by(desc(activity_rank), desc(Lead.created_at))
         .limit(limit)
     )
 

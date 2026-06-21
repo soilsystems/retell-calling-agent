@@ -236,60 +236,65 @@ function useDashboardData() {
 
   const load = React.useCallback(async () => {
     setLoading(true);
-    setError(null);
-    try {
-      setSyncing(true);
-      const syncRes = await fetch(api("/admin/zoho/sync"), { method: "POST" });
-      if (!syncRes.ok) throw new Error(`/admin/zoho/sync returned ${syncRes.status}`);
-      setLastSyncedAt(new Date().toISOString());
 
-      const [
-        healthRes,
-        summaryRes,
-        leadsRes,
-        jobsRes,
-        attemptsRes,
-        webhooksRes,
-        followupsRes,
-        syncLogsRes
-      ] = await Promise.all([
-        fetch(api("/health")),
-        fetch(api("/admin/summary")),
-        fetch(api("/admin/leads")),
-        fetch(api("/admin/call-jobs")),
-        fetch(api("/admin/call-attempts")),
-        fetch(api("/admin/webhook-events")),
-        fetch(api("/admin/followups")),
-        fetch(api("/admin/crm-sync-logs"))
-      ]);
-
-      for (const response of [
-        healthRes,
-        summaryRes,
-        leadsRes,
-        jobsRes,
-        attemptsRes,
-        webhooksRes,
-        followupsRes,
-        syncLogsRes
-      ]) {
-        if (!response.ok) throw new Error(`${response.url} returned ${response.status}`);
+    // Fetch JSON with a timeout; returns null on any failure (network blip,
+    // timeout, non-2xx) so one bad endpoint never breaks the whole refresh.
+    const getJson = async <T,>(path: string): Promise<T | null> => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 12000);
+      try {
+        const res = await fetch(api(path), { signal: controller.signal });
+        if (!res.ok) return null;
+        return (await res.json()) as T;
+      } catch {
+        return null;
+      } finally {
+        window.clearTimeout(timer);
       }
+    };
 
-      setHealth(await healthRes.json());
-      setSummary(await summaryRes.json());
-      setLeads(await leadsRes.json());
-      setJobs(await jobsRes.json());
-      setAttempts(await attemptsRes.json());
-      setWebhooks(await webhooksRes.json());
-      setFollowups(await followupsRes.json());
-      setSyncLogs(await syncLogsRes.json());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load dashboard data");
+    // Zoho sync is a best-effort background nicety — never let it block or
+    // fail the dashboard render.
+    setSyncing(true);
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 15000);
+      const syncRes = await fetch(api("/admin/zoho/sync"), { method: "POST", signal: controller.signal });
+      window.clearTimeout(timer);
+      if (syncRes.ok) setLastSyncedAt(new Date().toISOString());
+    } catch {
+      /* ignore sync errors */
     } finally {
       setSyncing(false);
-      setLoading(false);
     }
+
+    const [health, summary, leads, jobs, attempts, webhooks, followups, syncLogs] = await Promise.all([
+      getJson<Health>("/health"),
+      getJson<Summary>("/admin/summary"),
+      getJson<Lead[]>("/admin/leads"),
+      getJson<CallJob[]>("/admin/call-jobs"),
+      getJson<CallAttempt[]>("/admin/call-attempts"),
+      getJson<WebhookEvent[]>("/admin/webhook-events"),
+      getJson<Followup[]>("/admin/followups"),
+      getJson<CrmSyncLog[]>("/admin/crm-sync-logs")
+    ]);
+
+    // Update each slice only when its fetch succeeded — keep last-good data for
+    // any that momentarily failed, so the UI never blanks out on a blip.
+    if (health) setHealth(health);
+    if (summary) setSummary(summary);
+    if (leads) setLeads(leads);
+    if (jobs) setJobs(jobs);
+    if (attempts) setAttempts(attempts);
+    if (webhooks) setWebhooks(webhooks);
+    if (followups) setFollowups(followups);
+    if (syncLogs) setSyncLogs(syncLogs);
+
+    // Only surface an error if EVERYTHING failed (likely backend down); a
+    // partial/transient failure stays silent and retries on the next cycle.
+    const anyOk = [health, summary, leads, jobs, attempts, webhooks, followups, syncLogs].some(Boolean);
+    setError(anyOk ? null : "Can't reach the server — retrying…");
+    setLoading(false);
   }, []);
 
   React.useEffect(() => {

@@ -206,7 +206,24 @@ async def fetch_recent_zoho_leads(db: AsyncSession, limit: int = 100) -> list[di
     return response.json().get("data") or []
 
 
+# Serialize Zoho syncs: only one may run at a time across the whole process.
+# Concurrent syncs upsert the same lead rows and lock-contend on the leads
+# table, which surfaced as statement-timeout errors that broke other requests.
+_zoho_sync_lock = asyncio.Lock()
+_last_zoho_sync_result: dict[str, int] = {"fetched": 0, "synced": 0, "skipped": 0}
+
+
 async def sync_recent_zoho_leads(db: AsyncSession, limit: int = 100) -> dict[str, int]:
+    # If a sync is already running, don't pile on — return the last result.
+    if _zoho_sync_lock.locked():
+        return {**_last_zoho_sync_result, "skipped_reason": "already_running"}
+    async with _zoho_sync_lock:
+        result = await _do_sync_recent_zoho_leads(db, limit=limit)
+        _last_zoho_sync_result.update({k: v for k, v in result.items() if isinstance(v, int)})
+        return result
+
+
+async def _do_sync_recent_zoho_leads(db: AsyncSession, limit: int = 100) -> dict[str, int]:
     raw_leads = await fetch_recent_zoho_leads(db, limit=limit)
     synced = 0
     skipped = 0
@@ -248,6 +265,20 @@ async def sync_recent_zoho_leads(db: AsyncSession, limit: int = 100) -> dict[str
 
     await db.commit()
     return {"fetched": len(raw_leads), "synced": synced, "skipped": skipped}
+
+
+async def scheduled_zoho_sync() -> None:
+    """Backend scheduler entry — pulls recent Zoho leads on its own session.
+
+    The dashboard no longer triggers a sync on every page refresh (that caused
+    lock contention); this runs server-side, serialized, on an interval.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await sync_recent_zoho_leads(db)
+        logger.info("[ZohoSync] scheduled sync: %s", result)
+    except Exception as exc:
+        logger.error("[ZohoSync] scheduled sync failed: %s", exc)
 
 
 async def create_zoho_lead_for_inbound(phone: str, db: AsyncSession) -> str:

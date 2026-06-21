@@ -254,21 +254,9 @@ function useDashboardData() {
       }
     };
 
-    // Zoho sync is a best-effort background nicety — never let it block or
-    // fail the dashboard render.
-    setSyncing(true);
-    try {
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 15000);
-      const syncRes = await fetch(api("/admin/zoho/sync"), { method: "POST", signal: controller.signal });
-      window.clearTimeout(timer);
-      if (syncRes.ok) setLastSyncedAt(new Date().toISOString());
-    } catch {
-      /* ignore sync errors */
-    } finally {
-      setSyncing(false);
-    }
-
+    // NOTE: the Zoho sync runs on the backend scheduler now (every few min) —
+    // the dashboard no longer triggers it on every refresh, which was causing
+    // lock contention. We just read the latest data here.
     const [health, summary, leads, jobs, attempts, webhooks, followups, syncLogs] = await Promise.all([
       getJson<Health>("/health"),
       getJson<Summary>("/admin/summary"),
@@ -298,6 +286,24 @@ function useDashboardData() {
     setLoading(false);
   }, []);
 
+  // Manual "sync now" — force a fresh Zoho pull, then reload. (Auto-refresh
+  // only reads; the backend syncs Zoho on its own schedule.)
+  const syncNow = React.useCallback(async () => {
+    setSyncing(true);
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(api("/admin/zoho/sync"), { method: "POST", signal: controller.signal });
+      window.clearTimeout(timer);
+      if (res.ok) setLastSyncedAt(new Date().toISOString());
+    } catch {
+      /* ignore */
+    } finally {
+      setSyncing(false);
+      await load();
+    }
+  }, [load]);
+
   React.useEffect(() => {
     void load();
     const id = window.setInterval(() => {
@@ -326,6 +332,7 @@ function useDashboardData() {
     lastSyncedAt,
     error,
     load,
+    syncNow,
     patchLead
   };
 }
@@ -722,7 +729,7 @@ function App() {
               <PhoneCall size={16} />
               <span>Call a number</span>
             </button>
-            <button className="iconButton" onClick={data.load} title="Refresh dashboard data">
+            <button className="iconButton" onClick={data.syncNow} title="Sync Zoho leads now and refresh">
               <RefreshCcw size={18} />
             </button>
           </div>

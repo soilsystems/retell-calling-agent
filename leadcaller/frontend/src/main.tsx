@@ -84,6 +84,7 @@ type Lead = {
   latest_follow_up_required?: boolean | null;
   latest_follow_up_time?: string | null;
   picked_up?: boolean | null;
+  call_count?: number | null;
   next_scheduled_call_at?: string | null;
   next_scheduled_call_reason?: string | null;
   site_visit_fixed?: boolean | null;
@@ -946,6 +947,9 @@ function LeadActivityDashboard({
                   {lead.picked_up
                     ? <span className="pickPill picked" title="Lead has picked up a call">Picked up</span>
                     : <span className="pickPill notpicked" title="Lead has not picked up yet">Not picked</span>}
+                  <span className="callCountPill" title="Total calls made to this number (picked or not)">
+                    {(lead.call_count ?? 0)} call{(lead.call_count ?? 0) === 1 ? "" : "s"}
+                  </span>
                 </h3>
                 <p>{lead.phone} {lead.city ? `• ${lead.city}` : ""}</p>
               </div>
@@ -1095,7 +1099,12 @@ function LeadsTable({
               <strong>{lead.name}</strong>
               <small>{shortId(lead.zoho_lead_id)}</small>
             </td>
-            <td>{lead.phone}</td>
+            <td>
+              {lead.phone}
+              <span className="callCountPill" title="Total calls made (picked or not)">
+                {(lead.call_count ?? 0)} call{(lead.call_count ?? 0) === 1 ? "" : "s"}
+              </span>
+            </td>
             <td>{lead.campaign || "-"}</td>
             <td>{lead.language_preference}</td>
             <td><Badge value={lead.latest_call_job_status || lead.latest_attempt_status} /></td>

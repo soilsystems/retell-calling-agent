@@ -198,6 +198,8 @@ async def leads(limit: int = 100, db: AsyncSession = Depends(get_db)) -> list[di
                 else None,
                 # Pickup + next scheduled call (for the "who picked / who didn't" view)
                 "picked_up": picked_up,
+                # Total calls made to this number (every attempt, picked or not).
+                "call_count": len(all_attempts),
                 "next_scheduled_call_at": _iso(next_job.scheduled_at) if next_job else None,
                 "next_scheduled_call_reason": next_job.trigger_reason if next_job else None,
                 # Site-visit tracking

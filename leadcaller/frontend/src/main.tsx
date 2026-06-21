@@ -169,11 +169,12 @@ type Health = {
   environment: string;
 };
 
-type TabKey = "overview" | "activity" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync" | "whatsapp";
+type TabKey = "overview" | "activity" | "callbacks" | "leads" | "jobs" | "attempts" | "webhooks" | "followups" | "sync" | "whatsapp";
 
 const tabs: Array<{ key: TabKey; label: string; icon: IconComponent }> = [
   { key: "overview", label: "Overview", icon: BarChart3 },
   { key: "activity", label: "Lead Activity", icon: PhoneCall },
+  { key: "callbacks", label: "Callbacks", icon: CalendarClock },
   { key: "leads", label: "Leads", icon: Users },
   { key: "jobs", label: "Call Jobs", icon: Phone },
   { key: "attempts", label: "Attempts", icon: Headphones },
@@ -761,7 +762,11 @@ function App() {
             onCallLead={setCallingLead}
             onWhatsAppLead={openWhatsAppChat}
             onToggleVisited={toggleVisited}
+            onOpenCallbacks={() => setActiveTab("callbacks")}
           />
+        )}
+        {activeTab === "callbacks" && (
+          <CallbacksPage leads={data.leads} jobs={data.jobs} attempts={data.attempts} onCallLead={setCallingLead} />
         )}
         {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={openWhatsAppChat} />}
         {activeTab === "jobs" && <JobsTable jobs={data.jobs} onRefresh={data.load} />}
@@ -882,7 +887,8 @@ function LeadActivityDashboard({
   syncLogs,
   onCallLead,
   onWhatsAppLead,
-  onToggleVisited
+  onToggleVisited,
+  onOpenCallbacks
 }: {
   leads: Lead[];
   jobs: CallJob[];
@@ -892,6 +898,7 @@ function LeadActivityDashboard({
   onCallLead: (lead: Lead) => void;
   onWhatsAppLead: (lead: Lead) => void;
   onToggleVisited: (lead: Lead, visited: boolean) => void;
+  onOpenCallbacks: () => void;
 }) {
   // A pending call scheduled for later — either a requested callback OR an
   // automatic retry because the lead didn't pick up (no-answer/busy/failed).
@@ -923,10 +930,10 @@ function LeadActivityDashboard({
   return (
     <section className="content">
       <div className="opsGrid">
-        <div className="opsStat">
-          <span>Pending callbacks</span>
+        <button className="opsStat opsStatClickable" onClick={onOpenCallbacks} title="View all pending callbacks">
+          <span>Pending callbacks ›</span>
           <strong>{pendingCallbacks.length}</strong>
-        </div>
+        </button>
         <div className="opsStat urgentStat">
           <span>Due within 1 hour</span>
           <strong>{dueSoon.length}</strong>
@@ -1069,6 +1076,133 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
     <tr>
       <td className="empty" colSpan={colSpan}>No records yet</td>
     </tr>
+  );
+}
+
+const CALLBACK_REASONS: Record<string, { text: string; cls: string }> = {
+  callback_requested: { text: "Requested by user", cls: "info" },
+  no_answer_retry: { text: "Didn't pick up", cls: "wait" },
+  busy_retry: { text: "Line was busy", cls: "wait" },
+  failed_retry: { text: "Call failed", cls: "bad" }
+};
+const CALLBACK_TRIGGERS = Object.keys(CALLBACK_REASONS);
+
+function CallbacksPage({
+  leads,
+  jobs,
+  attempts,
+  onCallLead
+}: {
+  leads: Lead[];
+  jobs: CallJob[];
+  attempts: CallAttempt[];
+  onCallLead: (lead: Lead) => void;
+}) {
+  const rows = leads
+    .map((lead) => {
+      const leadJobs = jobs.filter((j) => j.lead_id === lead.id || j.phone === lead.phone);
+      const callbackJobs = leadJobs.filter((j) => CALLBACK_TRIGGERS.includes(j.trigger_reason || ""));
+      if (callbackJobs.length === 0) return null;
+
+      const pending = callbackJobs
+        .filter((j) => j.status === "pending")
+        .sort((a, b) => new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime())[0];
+      // Most recent callback job drives the reason shown.
+      const latestJob = [...callbackJobs].sort(
+        (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+      )[0];
+
+      // Attempts for this lead in chronological order.
+      const leadAttempts = attempts
+        .filter((a) => a.lead_id === lead.id || a.phone === lead.phone)
+        .sort((a, b) => new Date(a.started_at || 0).getTime() - new Date(b.started_at || 0).getTime());
+      const triesMade = leadAttempts.length || (latestJob?.retry_count ?? 0);
+      const pickupIndex = leadAttempts.findIndex((a) => ["answered", "completed"].includes(a.status));
+      const pickedUp = pickupIndex >= 0;
+      const triesUntilPickup = pickedUp ? pickupIndex + 1 : null;
+
+      return { lead, pending, latestJob, triesMade, pickedUp, triesUntilPickup };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .sort((a, b) => {
+      // Pending first, then by soonest scheduled time.
+      if (!!a.pending !== !!b.pending) return a.pending ? -1 : 1;
+      const at = a.pending ? new Date(a.pending.scheduled_at || 0).getTime() : 0;
+      const bt = b.pending ? new Date(b.pending.scheduled_at || 0).getTime() : 0;
+      return at - bt;
+    });
+
+  const pendingCount = rows.filter((r) => r.pending).length;
+
+  return (
+    <section className="content">
+      <div className="opsGrid">
+        <div className="opsStat">
+          <span>Pending callbacks</span>
+          <strong>{pendingCount}</strong>
+        </div>
+        <div className="opsStat">
+          <span>Requested by user</span>
+          <strong>{rows.filter((r) => r.pending?.trigger_reason === "callback_requested").length}</strong>
+        </div>
+        <div className="opsStat">
+          <span>Retrying (no pickup)</span>
+          <strong>{rows.filter((r) => r.pending && r.pending.trigger_reason !== "callback_requested").length}</strong>
+        </div>
+        <div className="opsStat">
+          <span>Picked up after retries</span>
+          <strong>{rows.filter((r) => r.pickedUp && (r.triesUntilPickup ?? 0) > 1).length}</strong>
+        </div>
+      </div>
+
+      <div className="tableWrap">
+        <table className="dataTable">
+          <thead>
+            <tr>
+              <th>Lead</th>
+              <th>Phone</th>
+              <th>Reason</th>
+              <th>Tries</th>
+              <th>Status</th>
+              <th>Next call</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td className="empty" colSpan={7}>No callbacks yet</td></tr>
+            ) : rows.map(({ lead, pending, latestJob, triesMade, pickedUp, triesUntilPickup }) => {
+              const reason = CALLBACK_REASONS[(pending || latestJob)?.trigger_reason || ""] || { text: "-", cls: "neutral" };
+              return (
+                <tr key={lead.id}>
+                  <td><strong>{lead.name}</strong></td>
+                  <td>{lead.phone}</td>
+                  <td><span className={`badge ${reason.cls}`}>{reason.text}</span></td>
+                  <td>{triesMade} call{triesMade === 1 ? "" : "s"}</td>
+                  <td>
+                    {pickedUp ? (
+                      <span className="badge good">
+                        Picked up{triesUntilPickup ? ` after ${triesUntilPickup} tr${triesUntilPickup === 1 ? "y" : "ies"}` : ""}
+                      </span>
+                    ) : pending ? (
+                      <span className="badge wait">Pending — {triesMade} so far</span>
+                    ) : (
+                      <span className="badge neutral">Stopped after {triesMade}</span>
+                    )}
+                  </td>
+                  <td>{pending ? fmtDate(pending.scheduled_at) : "-"}</td>
+                  <td>
+                    <button className="tableAction" onClick={() => onCallLead(lead)} title={`Call ${lead.name}`}>
+                      <Phone size={13} /> Call now
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

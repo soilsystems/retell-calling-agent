@@ -1429,3 +1429,15 @@ td small {
   background: #eef2ff;
   color: #4338ca;
 }
+
+.opsStatClickable {
+  cursor: pointer;
+  border: none;
+  text-align: left;
+  font: inherit;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.opsStatClickable:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+}

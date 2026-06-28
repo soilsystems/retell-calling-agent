@@ -782,6 +782,12 @@ def _build_inbound_response(
             "begin_message": begin_message,
         },
     }
+    # In prewarm mode the bot leg connects before the lead picks up, so make the
+    # bot WAIT for the person to speak first (start_speaker=user) instead of
+    # greeting into the void. Per-call override → inbound calls are unaffected.
+    if prewarm:
+        agent_override["retell_llm"]["start_speaker"] = "user"
+        agent_override["conversation_flow"]["start_speaker"] = "user"
 
     call_inbound_response: dict[str, Any] = {
         "override_agent_id": settings.RETELL_INBOUND_AGENT_ID if (not is_outbound_bridge and getattr(settings, "RETELL_INBOUND_AGENT_ID", None)) else settings.RETELL_AGENT_ID,

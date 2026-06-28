@@ -23,14 +23,14 @@ OUTBOUND_SCRIPT = (
 )
 
 OUTBOUND_BEGIN_KNOWN = (
-    "Hello, am I speaking with {lead_name}? "
-    "This is Vikas from Soil Systems. "
-    "Is this a good time for a quick chat about our farmland project?"
+    "Hi! This is Vikas from Soil Systems, "
+    "calling about your interest in our farmland project. "
+    "Is this a good time for a quick chat?"
 )
 
 OUTBOUND_BEGIN_UNKNOWN = (
-    "Hello? This is Vikas from Soil Systems. "
-    "I am calling regarding your enquiry about our farmland project. "
+    "Hi! This is Vikas from Soil Systems, "
+    "calling regarding your enquiry about our farmland project. "
     "Is this a good time for a quick chat?"
 )
 

@@ -743,6 +743,20 @@ def _build_inbound_response(
     else:
         begin_message = INBOUND_BEGIN_KNOWN.format(lead_name=lead_name)
 
+    # PREWARM mode: for outbound bridges the Retell leg is connected BEFORE the
+    # lead picks up, so an immediate begin_message gets spoken into the void and
+    # the lead joins mid-greeting. Instead, leave begin_message empty so the
+    # agent WAITS for the lead to speak ("hello?") and greets then — and tell
+    # the agent (via opening_instruction) to introduce itself on that first turn.
+    if is_outbound_bridge and getattr(settings, "PREWARM_RETELL_LEG", False):
+        greet = OUTBOUND_BEGIN_KNOWN.format(lead_name=lead_name) if (lead_name and lead_name.lower() != "unknown") else OUTBOUND_BEGIN_UNKNOWN
+        begin_message = ""
+        variables["opening_instruction"] = (
+            "The person has just picked up the phone. Wait for them to say hello, then "
+            f"greet them immediately and naturally with: \"{greet}\" "
+            "If they stay silent for a couple of seconds, say it anyway. Do not wait long."
+        )
+
     logger.info(
         "Retell inbound answer for lead_id=%s call_direction=%s begin_message=%s",
         lead_id,

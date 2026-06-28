@@ -508,15 +508,26 @@ async def connect_exotel_call_with_retell_ai(lead: "Lead", db: AsyncSession) -> 
         or f"{base_url.rstrip('/')}/webhooks/exotel/status"
     )
 
-    # Use Exotel's native two-leg bridge: Exotel calls the lead (Leg1),
-    # when the lead picks up, Exotel calls the Retell SIP number (Leg2).
-    # Retell receives this as an inbound call and the /retell/inbound handler
-    # detects the recent 'exotel_connect_call' log → uses outbound AI script.
+    # Use Exotel's native two-leg bridge. By default Exotel calls the lead
+    # first (Leg1) then the Retell SIP (Leg2) — so the lead hears ringback while
+    # the bot connects on Leg2.
+    #
+    # PREWARM mode (PREWARM_RETELL_LEG=True): swap the order — dial Retell FIRST
+    # so the bot is already connected, THEN dial the lead. The lead's phone just
+    # rings normally and the bot is ready the instant they pick up (no Leg2
+    # ringback). Reversible by flipping the flag back off.
     retell_sip_number = _required_setting("RETELL_FROM_NUMBER", settings.RETELL_FROM_NUMBER)
+    lead_phone = format_phone_number(lead.phone)
+    prewarm = getattr(settings, "PREWARM_RETELL_LEG", False)
+
+    if prewarm:
+        first_leg, second_leg = retell_sip_number, lead_phone   # bot first, lead second
+    else:
+        first_leg, second_leg = lead_phone, retell_sip_number   # lead first (current behaviour)
 
     payload: dict[str, str] = {
-        "From": format_phone_number(lead.phone),       # Lead's number — Exotel calls this first (Leg1)
-        "To": retell_sip_number,                        # Retell SIP — Exotel calls this when lead picks up (Leg2)
+        "From": first_leg,
+        "To": second_leg,
         "CallerId": caller_id,                          # ExoPhone — shown to the lead as caller ID
         "CallType": settings.EXOTEL_CALL_TYPE,
         "StatusCallback": status_callback,
@@ -525,10 +536,11 @@ async def connect_exotel_call_with_retell_ai(lead: "Lead", db: AsyncSession) -> 
             {
                 "lead_id": str(lead.id),
                 "lead_name": lead.name,
-                "lead_phone": format_phone_number(lead.phone),
+                "lead_phone": lead_phone,
             }
         ),
     }
+    logger.info("[Exotel] connect mode=%s From=%s To=%s", "prewarm" if prewarm else "lead-first", first_leg, second_leg)
     url = f"https://{subdomain.rstrip('/')}/v1/Accounts/{account_sid}/Calls/connect"
 
     try:

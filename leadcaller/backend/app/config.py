@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # Timezone Exotel reports Call StartTime/DateCreated in (account-local, no offset).
     EXOTEL_TIMEZONE: str = "Asia/Kolkata"
     EXOTEL_CALL_TYPE: Literal["trans", "promo"] = "trans"
+    # Pre-warm the Retell bot: dial the Retell SIP leg BEFORE the lead so the bot
+    # is connected by the time the lead picks up (removes the Leg-2 ringback).
+    # Off by default — flip on to test, flip off to instantly revert.
+    PREWARM_RETELL_LEG: bool = False
 
     # Exotel WhatsApp Business API
     EXOTEL_WA_API_KEY: str | None = None

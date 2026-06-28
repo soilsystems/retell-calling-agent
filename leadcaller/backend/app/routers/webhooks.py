@@ -746,18 +746,17 @@ def _build_inbound_response(
     # PREWARM mode: for outbound bridges the Retell leg is connected BEFORE the
     # lead picks up, so an immediate begin_message gets spoken into the void and
     # the lead joins mid-greeting. Instead, leave begin_message empty so the
-    # agent WAITS for the lead to speak ("hello?") and greets then — and tell
-    # the agent (via opening_instruction) to introduce itself on that first turn.
-    # A short reminder timer (1s) caps the silence: if the lead doesn't speak
-    # within 1s of joining, the agent breaks the silence and greets.
+    # agent WAITS for the lead to speak ("hello?") and greets then — the person
+    # greets first, the bot replies. (We can't force a timed auto-greet without
+    # re-introducing the talk-into-void problem, since Retell's silence timer
+    # starts at its own connection, not the lead's pickup.)
     prewarm = is_outbound_bridge and getattr(settings, "PREWARM_RETELL_LEG", False)
     if prewarm:
         greet = OUTBOUND_BEGIN_KNOWN.format(lead_name=lead_name) if (lead_name and lead_name.lower() != "unknown") else OUTBOUND_BEGIN_UNKNOWN
         begin_message = ""
         variables["opening_instruction"] = (
             "The person has just picked up the phone. The instant you hear them — even a "
-            f"\"hello\" or any sound — greet them right away with: \"{greet}\" "
-            "If you hear nothing for one second, say it anyway. Never stay silent."
+            f"\"hello\" or any sound — greet them right away with: \"{greet}\" then continue naturally."
         )
 
     logger.info(
@@ -772,16 +771,13 @@ def _build_inbound_response(
     # Retell dashboard prompt is the source of truth for agent persona and
     # branches on {{call_direction}} / dynamic variables we already send.
     # Overriding general_prompt would wipe out the dashboard's rich prompt.
-    retell_llm_override: dict[str, Any] = {"begin_message": begin_message}
-    if prewarm:
-        # Break any silence fast so the lead never waits more than ~1s.
-        retell_llm_override["reminder_trigger_ms"] = 1000
-        retell_llm_override["reminder_max_count"] = 3
     agent_override: dict[str, Any] = {
         "agent": {
             "language": retell_language,
         },
-        "retell_llm": retell_llm_override,
+        "retell_llm": {
+            "begin_message": begin_message,
+        },
         "conversation_flow": {
             "begin_message": begin_message,
         },

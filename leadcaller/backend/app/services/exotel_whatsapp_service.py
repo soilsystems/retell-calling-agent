@@ -232,20 +232,22 @@ def _classify_dlr_status(msg: dict[str, Any]) -> tuple[str | None, str | None]:
         return raw, detail
     if raw in {"failed", "undelivered", "rejected", "error"}:
         return "failed", detail
-    if "READ" in detailed:
+    # Exotel exo_detailed_status taxonomy: EX_MESSAGE_SENT / _DELIVERED / _SEEN are
+    # the success ladder (SEEN == read); EX_*_ERROR / restricted / re-engagement are
+    # failures. NOTE: success and failure both use 30xxx status codes (30001 sent,
+    # 30018 re-engagement, ...), so we must classify by the detailed status string,
+    # not the numeric code.
+    if "SEEN" in detailed or "READ" in detailed:
         return "read", detail
     if "DELIVERED" in detailed:
         return "delivered", detail
     if "SENT" in detailed:
         return "sent", detail
     if detailed and any(
-        tok in detailed for tok in ("ERROR", "FAIL", "RESTRICT", "REENGAGE", "INVALID", "PARAM", "UNDELIVER", "REJECT")
+        tok in detailed for tok in ("ERROR", "FAIL", "RESTRICT", "REENGAGE", "INVALID", "PARAM", "UNDELIVER", "REJECT", "BLOCK")
     ):
         return "failed", detail
-    code = msg.get("exo_status_code")
-    if isinstance(code, int) and code >= 30000:  # Exotel error codes start at 30xxx
-        return "failed", detail
-    return None, detail
+    return None, detail  # unknown — leave the stored status unchanged
 
 
 def extract_dlr(payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:

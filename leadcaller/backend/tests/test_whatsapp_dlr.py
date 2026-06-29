@@ -31,10 +31,14 @@ def test_extract_dlr_failure_from_exotel_detailed_status():
         ({"sid": "a", "status": "delivered"}, "delivered"),
         ({"sid": "b", "status": "read"}, "read"),
         ({"sid": "c", "status": "undelivered"}, "failed"),
-        ({"sid": "d", "exo_detailed_status": "EX_READ"}, "read"),
-        ({"sid": "e", "exo_detailed_status": "EX_DELIVERED"}, "delivered"),
+        # Real Exotel exo_detailed_status taxonomy (success ladder + failures).
+        ({"sid": "s", "exo_detailed_status": "EX_MESSAGE_SENT", "exo_status_code": 30001}, "sent"),
+        ({"sid": "d2", "exo_detailed_status": "EX_MESSAGE_DELIVERED", "exo_status_code": 30002}, "delivered"),
+        ({"sid": "seen", "exo_detailed_status": "EX_MESSAGE_SEEN", "exo_status_code": 30003}, "read"),
+        ({"sid": "re", "exo_detailed_status": "EX_REENGAGEMENT_ERROR", "exo_status_code": 30018}, "failed"),
         ({"sid": "f", "exo_detailed_status": "EX_RESTRICTED_BY_META"}, "failed"),
-        ({"sid": "g", "exo_status_code": 30007}, "failed"),
+        # A 30xxx code alone is NOT enough to call it failed (30001/30003 are success).
+        ({"sid": "g", "exo_status_code": 30007}, None),
         ({"sid": "h"}, None),  # nothing to classify → leave unchanged
     ],
 )

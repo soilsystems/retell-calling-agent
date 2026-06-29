@@ -45,7 +45,7 @@ from app.services.retell_service import (
     trigger_retell_call,
 )
 from app.services.exotel_service import lookup_outbound_call_lead, pop_pending_outbound_bridge
-from app.services.exotel_whatsapp_service import send_post_call_template
+from app.services.exotel_whatsapp_service import apply_delivery_status, extract_dlr, send_post_call_template
 from app.services.whatsapp_service import send_whatsapp_for_call
 from app.services.zoho_service import create_followup_task, create_zoho_lead_for_inbound, sync_to_zoho
 from app.utils.security import generate_idempotency_key, verify_retell_signature, verify_zoho_signature
@@ -857,11 +857,19 @@ async def _create_unknown_inbound_lead(caller_phone: str, db: AsyncSession) -> L
 
 
 @router.post("/whatsapp/status")
-async def whatsapp_status_callback(request: Request) -> JSONResponse:
-    """Capture Exotel WhatsApp delivery status callbacks for debugging."""
+async def whatsapp_status_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Exotel WhatsApp delivery-status (DLR) callback — the per-message
+    status_callback target set on outbound sends. Updates the matching message's
+    delivery state (delivered/read/failed) so the chat UI reflects reality."""
     body = await request.json()
     logger.info("[WhatsApp] Delivery status callback: %s", json.dumps(body, indent=2))
-    return JSONResponse(status_code=200, content={"status": "received"})
+    sid, status, detail = extract_dlr(body)
+    updated = await apply_delivery_status(db, sid, status, detail)
+    logger.info("[WhatsApp] status callback sid=%s -> %s applied=%s", sid, status, updated)
+    return JSONResponse(status_code=200, content={"status": "received", "applied": updated})
 
 
 async def _find_recent_exotel_lead(db: AsyncSession, exotel_call_sid: str | None = None) -> Lead | None:

@@ -257,15 +257,19 @@ function useDashboardData() {
     // NOTE: the Zoho sync runs on the backend scheduler now (every few min) —
     // the dashboard no longer triggers it on every refresh, which was causing
     // lock contention. We just read the latest data here.
+    // Pull a full page (backend caps at 500) from every list endpoint. The
+    // default of 100 silently truncated call-attempts (880+ rows), so most
+    // leads' call history was missing from the Activity timeline and the
+    // Attempts tab — making the tabs disagree. 500 keeps them consistent.
     const [health, summary, leads, jobs, attempts, webhooks, followups, syncLogs] = await Promise.all([
       getJson<Health>("/health"),
       getJson<Summary>("/admin/summary"),
-      getJson<Lead[]>("/admin/leads"),
-      getJson<CallJob[]>("/admin/call-jobs"),
-      getJson<CallAttempt[]>("/admin/call-attempts"),
-      getJson<WebhookEvent[]>("/admin/webhook-events"),
-      getJson<Followup[]>("/admin/followups"),
-      getJson<CrmSyncLog[]>("/admin/crm-sync-logs")
+      getJson<Lead[]>("/admin/leads?limit=500"),
+      getJson<CallJob[]>("/admin/call-jobs?limit=500"),
+      getJson<CallAttempt[]>("/admin/call-attempts?limit=500"),
+      getJson<WebhookEvent[]>("/admin/webhook-events?limit=500"),
+      getJson<Followup[]>("/admin/followups?limit=500"),
+      getJson<CrmSyncLog[]>("/admin/crm-sync-logs?limit=500")
     ]);
 
     // Update each slice only when its fetch succeeded — keep last-good data for
@@ -653,12 +657,28 @@ function App() {
     }
   }, [data]);
 
+  // One search box, applied uniformly to every data tab. Each tab matches the
+  // query against its own most relevant text fields.
+  const matchesQuery = (...parts: (string | null | undefined)[]) =>
+    parts.filter(Boolean).join(" ").toLowerCase().includes(query.toLowerCase());
+
   const filteredLeads = data.leads.filter((lead) =>
-    [lead.name, lead.phone, lead.zoho_lead_id, lead.campaign, lead.city]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .includes(query.toLowerCase())
+    matchesQuery(lead.name, lead.phone, lead.zoho_lead_id, lead.campaign, lead.city)
+  );
+  const filteredAttempts = data.attempts.filter((a) =>
+    matchesQuery(a.lead_name, a.phone, a.summary, a.status, a.interest_level, a.call_outcome, a.caller_requirement, a.retell_call_id)
+  );
+  const filteredJobs = data.jobs.filter((j) =>
+    matchesQuery(j.lead_name, j.phone, j.status, j.trigger_reason)
+  );
+  const filteredWebhooks = data.webhooks.filter((w) =>
+    matchesQuery(w.source, w.event_type, w.idempotency_key)
+  );
+  const filteredFollowups = data.followups.filter((f) =>
+    matchesQuery(f.lead_name, f.status, f.zoho_task_id)
+  );
+  const filteredSync = data.syncLogs.filter((l) =>
+    matchesQuery(l.lead_name, l.operation, l.error_message)
   );
 
   return (
@@ -722,7 +742,7 @@ function App() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search leads, phones, campaigns"
+                placeholder="Search name, phone, summary…"
               />
             </label>
             <button className="callNumberBtn" onClick={() => setShowCallNumber(true)} title="Call any number with AI">
@@ -776,11 +796,11 @@ function App() {
           <CallbacksPage leads={data.leads} jobs={data.jobs} attempts={data.attempts} onCallLead={setCallingLead} />
         )}
         {activeTab === "leads" && <LeadsTable leads={filteredLeads} onCallLead={setCallingLead} onWhatsAppLead={openWhatsAppChat} />}
-        {activeTab === "jobs" && <JobsTable jobs={data.jobs} onRefresh={data.load} />}
-        {activeTab === "attempts" && <AttemptsTable attempts={data.attempts} />}
-        {activeTab === "webhooks" && <WebhooksTable webhooks={data.webhooks} />}
-        {activeTab === "followups" && <FollowupsTable followups={data.followups} />}
-        {activeTab === "sync" && <SyncLogsTable logs={data.syncLogs} />}
+        {activeTab === "jobs" && <JobsTable jobs={filteredJobs} onRefresh={data.load} />}
+        {activeTab === "attempts" && <AttemptsTable attempts={filteredAttempts} />}
+        {activeTab === "webhooks" && <WebhooksTable webhooks={filteredWebhooks} />}
+        {activeTab === "followups" && <FollowupsTable followups={filteredFollowups} />}
+        {activeTab === "sync" && <SyncLogsTable logs={filteredSync} />}
         {activeTab === "whatsapp" && <WhatsAppChat initialPhone={whatsAppTargetPhone} leads={data.leads} />}
       </main>
     </div>
@@ -1033,7 +1053,24 @@ function LeadActivityDashboard({
 
             <div className="callTimeline">
               {leadAttempts.length === 0 ? (
-                <div className="emptyCard compact">No call history yet</div>
+                (lead.call_count ?? 0) > 0 ? (
+                  // This lead's detailed attempt rows are older than the page we
+                  // fetched, but the backend still reports its latest call. Show
+                  // that summary so the timeline never contradicts the boxes above
+                  // (a lead with calls never reads "No call history yet").
+                  <div className="timelineItem">
+                    <div className="timelineDot" />
+                    <div>
+                      <div className="timelineHead">
+                        <strong>{lead.call_count} call{(lead.call_count ?? 0) === 1 ? "" : "s"} on record</strong>
+                        <Badge value={lead.latest_attempt_status} />
+                      </div>
+                      <p>{lead.latest_summary || "Open the Attempts tab for full call detail."}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="emptyCard compact">No call history yet</div>
+                )
               ) : leadAttempts.slice(0, 4).map((attempt) => (
                 <div className="timelineItem" key={attempt.id}>
                   <div className="timelineDot" />
@@ -1863,6 +1900,8 @@ type ChatMessage = {
   latitude: string | null;
   longitude: string | null;
   location_name: string | null;
+  status?: string | null;
+  status_detail?: string | null;
   created_at: string | null;
 };
 
@@ -2055,6 +2094,14 @@ function WhatsAppChat({ initialPhone, leads }: { initialPhone: string | null; le
     );
   };
 
+  // WhatsApp only delivers business free-text inside the 24h window opened by the
+  // contact's last inbound message. If that window is closed, warn before sending
+  // (only templates — e.g. the post-call brochure — deliver outside it).
+  const lastInboundAt = (thread?.messages || [])
+    .filter((m) => m.direction === "inbound" && m.created_at)
+    .reduce((max, m) => Math.max(max, new Date(m.created_at as string).getTime()), 0);
+  const hasOpenSession = lastInboundAt > 0 && Date.now() - lastInboundAt < 24 * 60 * 60 * 1000;
+
   return (
     <section className="content" style={{ height: "calc(100vh - 180px)", display: "flex" }}>
       <div className="waChatWrap">
@@ -2108,6 +2155,24 @@ function WhatsAppChat({ initialPhone, leads }: { initialPhone: string | null; le
                 <div className="notice badNotice" style={{ margin: "0 14px 8px" }}>
                   <AlertCircle size={14} />
                   <span>{error}</span>
+                </div>
+              )}
+
+              {thread && !hasOpenSession && (
+                <div
+                  className="notice"
+                  style={{
+                    margin: "0 14px 8px",
+                    background: "rgba(250, 204, 21, 0.12)",
+                    border: "1px solid rgba(250, 204, 21, 0.35)",
+                    color: "#eab308"
+                  }}
+                >
+                  <AlertCircle size={14} />
+                  <span>
+                    This contact hasn’t messaged in the last 24h, so WhatsApp may not deliver free text.
+                    They’ll still receive template messages (e.g. after a call). Ask them to reply once to reopen chat.
+                  </span>
                 </div>
               )}
 
@@ -2230,8 +2295,30 @@ function MessageBubble({ m }: { m: ChatMessage }) {
           <span>{m.location_name || `${m.latitude},${m.longitude}`}</span>
         </a>
       )}
-      <span className="waBubbleTime">{m.created_at ? fmtDate(m.created_at) : ""}</span>
+      <span className="waBubbleTime">
+        {m.created_at ? fmtDate(m.created_at) : ""}
+        {m.direction === "outbound" && m.status && <DeliveryStatus status={m.status} detail={m.status_detail} />}
+      </span>
     </div>
+  );
+}
+
+function DeliveryStatus({ status, detail }: { status: string; detail?: string | null }) {
+  const s = status.toLowerCase();
+  const map: Record<string, { label: string; color: string }> = {
+    sent: { label: "✓ Sent", color: "inherit" },
+    delivered: { label: "✓✓ Delivered", color: "inherit" },
+    read: { label: "✓✓ Read", color: "#53bdeb" },
+    failed: { label: "⚠ Not delivered", color: "#f87171" }
+  };
+  const view = map[s] || { label: status, color: "inherit" };
+  return (
+    <span
+      style={{ marginLeft: 6, color: view.color }}
+      title={detail || (s === "failed" ? "WhatsApp did not deliver this message" : view.label)}
+    >
+      {view.label}
+    </span>
   );
 }
 

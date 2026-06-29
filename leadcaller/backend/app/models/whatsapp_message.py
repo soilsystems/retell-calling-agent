@@ -40,5 +40,9 @@ class WhatsAppMessage(Base):
     longitude: Mapped[str | None] = mapped_column(Text)
     location_name: Mapped[str | None] = mapped_column(Text)
     provider_message_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    # Delivery state from Exotel DLR callbacks: sent | delivered | read | failed.
+    # status_detail holds Exotel's exo_detailed_status / description for failures.
+    status: Mapped[str | None] = mapped_column(Text)
+    status_detail: Mapped[str | None] = mapped_column(Text)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

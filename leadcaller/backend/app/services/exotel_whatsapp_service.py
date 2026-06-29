@@ -205,6 +205,90 @@ async def send_template(
     )
 
 
+def _dlr_message_node(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the message dict from an Exotel DLR/status payload (or the payload)."""
+    wa = payload.get("whatsapp")
+    if isinstance(wa, dict):
+        msgs = wa.get("messages")
+        if isinstance(msgs, list) and msgs and isinstance(msgs[0], dict):
+            return msgs[0]
+    if isinstance(payload.get("message"), dict):
+        return payload["message"]
+    return payload
+
+
+def _classify_dlr_status(msg: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Map an Exotel DLR message dict to (coarse_status, detail).
+
+    Exotel DLRs carry the message sid plus exo_detailed_status / exo_status_code
+    (e.g. EX_TEMPLATE_PARAM_ERROR, EX_RESTRICTED_BY_META) and a human-readable
+    `description` — there is no plain "status" field — so we classify from those.
+    Returns status None when we can't tell (leaves the stored status unchanged).
+    """
+    detail = msg.get("exo_detailed_status") or msg.get("description")
+    raw = str(msg.get("status") or msg.get("delivery_status") or msg.get("message_status") or "").lower()
+    detailed = str(msg.get("exo_detailed_status") or "").upper()
+    if raw in {"sent", "delivered", "read"}:
+        return raw, detail
+    if raw in {"failed", "undelivered", "rejected", "error"}:
+        return "failed", detail
+    if "READ" in detailed:
+        return "read", detail
+    if "DELIVERED" in detailed:
+        return "delivered", detail
+    if "SENT" in detailed:
+        return "sent", detail
+    if detailed and any(
+        tok in detailed for tok in ("ERROR", "FAIL", "RESTRICT", "REENGAGE", "INVALID", "PARAM", "UNDELIVER", "REJECT")
+    ):
+        return "failed", detail
+    code = msg.get("exo_status_code")
+    if isinstance(code, int) and code >= 30000:  # Exotel error codes start at 30xxx
+        return "failed", detail
+    return None, detail
+
+
+def extract_dlr(payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """(provider_message_id, coarse_status, detail) from any Exotel DLR/status payload."""
+    msg = _dlr_message_node(payload)
+    sid = (
+        msg.get("sid") or msg.get("id") or msg.get("message_id")
+        or payload.get("sid") or payload.get("message_id")
+    )
+    status, detail = _classify_dlr_status(msg)
+    return (str(sid) if sid else None, status, detail)
+
+
+async def apply_delivery_status(
+    db: AsyncSession,
+    provider_message_id: str | None,
+    status: str | None,
+    detail: str | None,
+) -> bool:
+    """Update a stored outbound message's delivery status from a DLR.
+
+    Status only moves forward (sent → delivered → read); a late "sent" callback
+    never overwrites "read". "failed" always wins. Matched by provider_message_id
+    (the Exotel sid we stored when sending). Returns True if a row was updated.
+    """
+    if not provider_message_id or not status:
+        return False
+    result = await db.execute(
+        select(WhatsAppMessage).where(WhatsAppMessage.provider_message_id == provider_message_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        return False
+    order = {"sent": 1, "delivered": 2, "read": 3, "failed": 4}
+    if order.get(status, 0) >= order.get(msg.status or "", 0):
+        msg.status = status
+        if detail:
+            msg.status_detail = detail
+        await db.commit()
+        return True
+    return False
+
+
 def _extract_provider_sid(response: dict[str, Any]) -> str | None:
     """Dig the message sid out of Exotel's nested response."""
     try:
@@ -240,6 +324,8 @@ async def _log_outbound_template(
         message_type=WhatsAppMessageType.template,
         body=body,
         provider_message_id=provider_id,
+        status="failed" if error else "sent",
+        status_detail=error,
         raw_payload={"template": template_name, "response": response, "error": error},
     )
     db.add(msg)
@@ -407,6 +493,7 @@ async def send_feedback_template(
             message_type=WhatsAppMessageType.text,
             body=message,
             provider_message_id=_extract_provider_sid(response),
+            status="sent",
             raw_payload={"feedback": True, "response": response},
         )
         db.add(msg)

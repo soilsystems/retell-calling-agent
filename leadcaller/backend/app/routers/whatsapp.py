@@ -292,6 +292,11 @@ async def whatsapp_incoming_webhook(
             db.add(chat_msg)
         await db.commit()
         logger.info("[WhatsApp] Stored webhook event: idempotency_key=%s", idempotency_key)
+        # A DLR routed here updates the matching outbound message's delivery state.
+        if is_dlr:
+            sid, status, detail = exotel_whatsapp_service.extract_dlr(payload)
+            updated = await exotel_whatsapp_service.apply_delivery_status(db, sid, status, detail)
+            logger.info("[WhatsApp] DLR sid=%s status=%s applied=%s", sid, status, updated)
     else:
         logger.info("[WhatsApp] Duplicate webhook event: idempotency_key=%s", idempotency_key)
 
@@ -417,6 +422,8 @@ def _message_to_dict(m: WhatsAppMessage) -> dict[str, Any]:
         "longitude": m.longitude,
         "location_name": m.location_name,
         "provider_message_id": m.provider_message_id,
+        "status": m.status,
+        "status_detail": m.status_detail,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
 
@@ -576,6 +583,10 @@ async def send_to_conversation(
         longitude=str(payload.longitude) if payload.longitude is not None else None,
         location_name=payload.location_name,
         provider_message_id=provider_id,
+        # Exotel accepted the message (queued). Whether WhatsApp actually delivers
+        # it (free-text needs an open 24h window) is reported later via DLR, which
+        # updates this to delivered/read/failed.
+        status="sent",
         raw_payload={"request": payload.model_dump(), "response": response},
     )
     db.add(msg)
@@ -664,6 +675,9 @@ async def whatsapp_status_webhook(
         db.add(webhook_event)
         await db.commit()
         logger.info("[WhatsApp] Stored status webhook event: idempotency_key=%s", idempotency_key)
+        sid, coarse, detail = exotel_whatsapp_service.extract_dlr(payload)
+        updated = await exotel_whatsapp_service.apply_delivery_status(db, sid, coarse, detail)
+        logger.info("[WhatsApp] status sid=%s -> %s applied=%s", sid, coarse, updated)
     else:
         logger.info("[WhatsApp] Duplicate status webhook event: idempotency_key=%s", idempotency_key)
 

@@ -5,7 +5,7 @@ from typing import Any, Literal
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -83,6 +83,60 @@ async def _queue_retell_ai_call(lead: Lead, db: AsyncSession, background_tasks: 
         "lead_name": lead.name,
         "phone": lead.phone,
     }
+
+
+async def _record_manual_dial(lead: Lead, db: AsyncSession) -> CallJob:
+    """Record a manually-placed AI call so the lead surfaces at the top of the
+    dashboard the instant it is dialled — before any provider webhook fires.
+
+    Two independent ordering layers each need a nudge:
+      • Backend /admin/leads ranks by greatest(last_call, updated_at, created_at)
+        and returns only the top rows, so we bump lead.updated_at to pull an
+        otherwise-stale lead into that window.
+      • The "Lead Activity" tab re-sorts client-side by the newest call_job /
+        call_attempt timestamp, so we create an in_progress CallJob(started_at=now)
+        for it to see.
+    Without these, a manual call leaves no trace until the call ends and the
+    completion webhook back-fills an attempt — so the lead appears "stuck".
+
+    Any already-pending job for this lead is cancelled first: a manual "call now"
+    supersedes a queued auto-retry/callback. Skipping this would leave two pending
+    jobs and the scheduler would later double-dial the lead every retry cycle.
+    """
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        update(CallJob)
+        .where(CallJob.lead_id == lead.id, CallJob.status == CallJobStatus.pending)
+        .values(status=CallJobStatus.cancelled)
+    )
+    call_job = CallJob(
+        lead_id=lead.id,
+        status=CallJobStatus.in_progress,
+        scheduled_at=now,
+        started_at=now,
+        retry_count=0,
+        max_retries=3,
+        trigger_reason="manual_call",
+    )
+    db.add(call_job)
+    lead.updated_at = now
+    await db.commit()
+    await db.refresh(call_job)
+    return call_job
+
+
+async def _place_manual_ai_call(lead: Lead, db: AsyncSession) -> dict[str, Any]:
+    """Record the manual dial (so the lead jumps to the top immediately) and then
+    place the Exotel→Retell AI call. If the synchronous dial fails, mark the job
+    failed so it is not left orphaned as in_progress (and the dial error still
+    propagates to the dashboard)."""
+    call_job = await _record_manual_dial(lead, db)
+    try:
+        return await connect_exotel_call_with_retell_ai(lead, db)
+    except Exception:
+        call_job.status = CallJobStatus.failed
+        await db.commit()
+        raise
 
 
 @router.get("/summary")
@@ -396,7 +450,9 @@ async def call_lead(
         # Exotel calls lead (Leg1) → lead picks up → Exotel bridges to Retell SIP (Leg2)
         # → Retell inbound handler detects outbound bridge → AI speaks first.
         # This bypasses the broken Retell SIP outbound trunk (missing auth creds).
-        return await connect_exotel_call_with_retell_ai(lead, db)
+        # Record the dial first so the lead surfaces at the top of the dashboard
+        # immediately (see _record_manual_dial).
+        return await _place_manual_ai_call(lead, db)
 
     # mode == "human" or "exotel_human": Bridge the call to the human agent's phone via Exotel
     if not body.agent_phone or body.agent_phone.strip() == "":
@@ -474,5 +530,5 @@ async def call_number(
         await db.commit()
         await db.refresh(lead)
 
-    result = await connect_exotel_call_with_retell_ai(lead, db)
+    result = await _place_manual_ai_call(lead, db)
     return {**result, "lead_id": str(lead.id), "phone": phone, "name": lead.name}
